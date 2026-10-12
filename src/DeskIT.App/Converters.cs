@@ -132,3 +132,77 @@ public sealed class DiagnosisConclusionToBrushConverter : IValueConverter
     public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
         => throw new NotSupportedException();
 }
+
+/// <summary>把动作风险级别转换为徽标背景色。</summary>
+public sealed class RiskLevelToBrushConverter : IValueConverter
+{
+    private static readonly SolidColorBrush ReadOnlyBrush = new(Color.FromRgb(0x9C, 0xA3, 0xAF));
+    private static readonly SolidColorBrush LowBrush = new(Color.FromRgb(0x16, 0xA3, 0x4A));
+    private static readonly SolidColorBrush MediumBrush = new(Color.FromRgb(0xD9, 0x77, 0x06));
+    private static readonly SolidColorBrush HighBrush = new(Color.FromRgb(0xDC, 0x26, 0x26));
+    private static readonly SolidColorBrush IrreversibleBrush = new(Color.FromRgb(0x99, 0x1B, 0x1B));
+
+    /// <summary>按风险级别返回背景色：只读=灰、低=绿、中=橙、高=红、不可逆=深红。</summary>
+    /// <param name="value">RiskLevel 值。</param>
+    /// <param name="targetType">目标类型。</param>
+    /// <param name="parameter">未使用。</param>
+    /// <param name="culture">区域信息。</param>
+    /// <returns>对应的画刷。</returns>
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        => value switch
+        {
+            RiskLevel.ReadOnly => ReadOnlyBrush,
+            RiskLevel.Low => LowBrush,
+            RiskLevel.Medium => MediumBrush,
+            RiskLevel.High => HighBrush,
+            RiskLevel.Irreversible => IrreversibleBrush,
+            _ => ReadOnlyBrush
+        };
+
+    /// <summary>不支持反向转换。</summary>
+    /// <param name="value">值。</param>
+    /// <param name="targetType">目标类型。</param>
+    /// <param name="parameter">参数。</param>
+    /// <param name="culture">区域信息。</param>
+    /// <returns>不返回。</returns>
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}
+
+/// <summary>把动作执行结果归类转换为徽标背景色。</summary>
+public sealed class ActionOutcomeToBrushConverter : IValueConverter
+{
+    private static readonly SolidColorBrush SuccessBrush = new(Color.FromRgb(0x16, 0xA3, 0x4A));
+    private static readonly SolidColorBrush PendingRestartBrush = new(Color.FromRgb(0x7C, 0x3A, 0xED));
+    private static readonly SolidColorBrush FailedBrush = new(Color.FromRgb(0xDC, 0x26, 0x26));
+    private static readonly SolidColorBrush SkippedBrush = new(Color.FromRgb(0x9C, 0xA3, 0xAF));
+    private static readonly SolidColorBrush CancelledBrush = new(Color.FromRgb(0x6B, 0x72, 0x80));
+    private static readonly SolidColorBrush TimedOutBrush = new(Color.FromRgb(0xD9, 0x77, 0x06));
+
+    /// <summary>按结果归类返回背景色：成功=绿、需重启=紫、失败=红、跳过=灰、取消=深灰、超时=橙。</summary>
+    /// <param name="value">ActionOutcome 值。</param>
+    /// <param name="targetType">目标类型。</param>
+    /// <param name="parameter">未使用。</param>
+    /// <param name="culture">区域信息。</param>
+    /// <returns>对应的画刷。</returns>
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        => value switch
+        {
+            ActionOutcome.Success => SuccessBrush,
+            ActionOutcome.SuccessPendingRestart => PendingRestartBrush,
+            ActionOutcome.Failed => FailedBrush,
+            ActionOutcome.Skipped => SkippedBrush,
+            ActionOutcome.Cancelled => CancelledBrush,
+            ActionOutcome.TimedOut => TimedOutBrush,
+            _ => SkippedBrush
+        };
+
+    /// <summary>不支持反向转换。</summary>
+    /// <param name="value">值。</param>
+    /// <param name="targetType">目标类型。</param>
+    /// <param name="parameter">参数。</param>
+    /// <param name="culture">区域信息。</param>
+    /// <returns>不返回。</returns>
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}

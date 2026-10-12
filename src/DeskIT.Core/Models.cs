@@ -1,21 +1,5 @@
 namespace DeskIT.Core;
 
-/// <summary>一次可执行动作的描述（骨架）。其风险级别、是否需重启、是否可回滚均为固有属性。</summary>
-public sealed class ActionDescriptor
-{
-    /// <summary>动作名称（面向 IT 人员的可读名称）。</summary>
-    public required string Name { get; init; }
-
-    /// <summary>风险级别。</summary>
-    public required RiskLevel Risk { get; init; }
-
-    /// <summary>执行后是否需要重启目标机才能生效。</summary>
-    public bool RequiresRestart { get; init; }
-
-    /// <summary>是否可回滚。</summary>
-    public bool CanRollback { get; init; }
-}
-
 /// <summary>目标机信息快照骨架。同一台机器多次处理应归并到同一档案。</summary>
 public sealed class TargetMachineInfo
 {

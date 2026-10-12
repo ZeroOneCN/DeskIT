@@ -1,0 +1,31 @@
+[
+  {
+    "actionId": "slowness.set-high-performance",
+    "name": "切换电源计划为高性能",
+    "risk": "Medium",
+    "scene": "Slowness",
+    "summary": "把当前电源计划切换为“高性能”，用于笔记本接入电源时性能受限导致的卡慢。原计划会被备份。",
+    "requiresRestart": false,
+    "canRollback": true,
+    "rollbackNote": "原电源计划已备份到本次动作的备份文件，可按记录重新切换回去。",
+    "requiresAdministrator": true,
+    "timeoutSeconds": 120,
+    "script": "$before = powercfg /getactivescheme\n$before | Out-String | Set-Content -Path {{BackupFile}} -Encoding UTF8\npowercfg /setactive SCHEME_MIN\nWrite-Output ('已切换电源计划为高性能；原计划：' + ($before | Out-String).Trim())"
+  },
+  {
+    "actionId": "slowness.end-heavy-process",
+    "name": "结束指定高占用进程",
+    "risk": "High",
+    "scene": "Slowness",
+    "summary": "强制结束指定名称的进程，用于进程无响应或持续占满 CPU / 内存。未保存的数据可能丢失。",
+    "requiresRestart": false,
+    "canRollback": false,
+    "rollbackNote": "被结束的进程无法恢复运行，需用户重新启动对应程序。",
+    "requiresAdministrator": true,
+    "timeoutSeconds": 120,
+    "parameters": [
+      { "name": "ProcessName", "description": "进程名称（不含 .exe，如 notepad；可用通配符 *）" }
+    ],
+    "script": "Stop-Process -Name {{ProcessName}} -Force -ErrorAction Stop\nWrite-Output ('已结束进程：' + {{ProcessName}})"
+  }
+]

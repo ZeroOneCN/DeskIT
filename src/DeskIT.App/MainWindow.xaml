@@ -14,6 +14,8 @@
         <local:SelfCheckOutcomeToTextConverter x:Key="OutcomeText" />
         <local:CollectionGroupStatusToBrushConverter x:Key="GroupStatusBrush" />
         <local:DiagnosisConclusionToBrushConverter x:Key="ConclusionBrush" />
+        <local:RiskLevelToBrushConverter x:Key="RiskBrush" />
+        <local:ActionOutcomeToBrushConverter x:Key="ActionOutcomeBrush" />
         <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
 
         <Style x:Key="CardBorder" TargetType="Border">
@@ -448,6 +450,167 @@
                                     </StackPanel>
                                 </StackPanel>
                             </ScrollViewer>
+                        </Border>
+                    </Grid>
+                </Grid>
+            </TabItem>
+
+            <!-- ============ M4 修复动作库 ============ -->
+            <TabItem Header="修复动作（M4）">
+                <Grid Margin="0,4,0,0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <!-- 动作搜索与执行触发 -->
+                    <Border Grid.Row="0" Style="{StaticResource CardBorder}">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource CardTitle}"
+                                       Text="修复动作库（勾选后执行；排序按风险升序，需重启的排最后）" />
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="搜索：" FontSize="12" Foreground="#6B7280"
+                                           VerticalAlignment="Center" />
+                                <TextBox x:Name="ActionSearchBox" Width="220" Height="30" Margin="6,0,0,0"
+                                         VerticalContentAlignment="Center"
+                                         TextChanged="OnActionSearchChanged" />
+                                <Button x:Name="RunActionsButton" Style="{StaticResource PrimaryButton}" Margin="12,0,0,0"
+                                        Content="执行勾选动作" IsEnabled="False" Click="OnRunActionsClick" />
+                                <Button x:Name="CancelActionsButton" Height="34" Padding="14,0" Margin="8,0,0,0"
+                                        Content="中止后续动作" IsEnabled="False" Click="OnCancelActionsClick" />
+                                <TextBlock Foreground="#9CA3AF" FontSize="11" Margin="14,0,0,0" VerticalAlignment="Center"
+                                           TextWrapping="Wrap"
+                                           Text="按“名称 / 影响 / 标识 / 场景”搜索；只读诊断模式下动作库全部禁用。" />
+                            </StackPanel>
+                            <ProgressBar x:Name="ActionProgressBar" Height="6" Margin="0,12,0,6"
+                                         Minimum="0" Maximum="100" Value="0" />
+                            <TextBlock x:Name="ActionLibraryText" FontSize="12" FontWeight="SemiBold"
+                                       Foreground="#111827" TextWrapping="Wrap" Text="正在加载动作库…" />
+                            <TextBlock x:Name="ActionProgressText" FontSize="12" Foreground="#6B7280"
+                                       TextWrapping="Wrap" Margin="0,2,0,0"
+                                       Text="只读动作无需确认；中风险为汇总确认；高风险逐项确认；不可逆需输入确认词后才执行。" />
+                            <TextBlock x:Name="ActionProblemText" FontSize="12" Foreground="#B45309"
+                                       TextWrapping="Wrap" Margin="0,4,0,0" Visibility="Collapsed" />
+                        </StackPanel>
+                    </Border>
+
+                    <!-- 动作清单与执行结果 -->
+                    <Grid Grid.Row="1" Margin="0,12,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="400" />
+                        </Grid.ColumnDefinitions>
+
+                        <Border Grid.Column="0" Style="{StaticResource CardBorder}" Margin="0,0,14,0">
+                            <DockPanel>
+                                <TextBlock DockPanel.Dock="Top" Style="{StaticResource CardTitle}"
+                                           Text="可选动作（按风险升序，需重启排最后）" />
+                                <ListBox x:Name="ActionList" BorderThickness="0"
+                                         ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border BorderBrush="#F3F4F6" BorderThickness="0,0,0,1" Padding="2,9">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="Auto" />
+                                                        <ColumnDefinition Width="*" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <CheckBox Grid.Column="0" VerticalAlignment="Top" Margin="0,1,10,0"
+                                                              IsChecked="{Binding IsSelected, Mode=TwoWay}"
+                                                              IsEnabled="{Binding CanRun}" />
+                                                    <StackPanel Grid.Column="1">
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <Border CornerRadius="10" Padding="8,2" VerticalAlignment="Center"
+                                                                    Background="{Binding Risk, Converter={StaticResource RiskBrush}}">
+                                                                <TextBlock FontSize="11" Foreground="White" Text="{Binding RiskText}" />
+                                                            </Border>
+                                                            <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="13"
+                                                                       TextWrapping="Wrap" Margin="10,0,0,0" VerticalAlignment="Center" />
+                                                            <Border Background="#EEF2FF" CornerRadius="10" Padding="8,2"
+                                                                    Margin="10,0,0,0" VerticalAlignment="Center"
+                                                                    Visibility="{Binding RequiresRestart, Converter={StaticResource BoolToVisibility}}">
+                                                                <TextBlock FontSize="11" Foreground="#1D4ED8" Text="需重启生效" />
+                                                            </Border>
+                                                        </StackPanel>
+                                                        <TextBlock Text="{Binding SceneName}" Foreground="#9CA3AF" FontSize="11"
+                                                                   Margin="0,4,0,0" />
+                                                        <TextBlock Text="{Binding Summary}" Foreground="#6B7280" FontSize="12"
+                                                                   TextWrapping="Wrap" Margin="0,2,0,0" />
+                                                        <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                                            <TextBlock Text="{Binding ConfirmationText}" FontSize="11"
+                                                                       Foreground="#6B7280" />
+                                                            <TextBlock Text="{Binding RollbackText}" FontSize="11"
+                                                                       Foreground="#6B7280" Margin="12,0,0,0" />
+                                                            <TextBlock Text="{Binding TimeoutText}" FontSize="11"
+                                                                       Foreground="#9CA3AF" Margin="12,0,0,0" />
+                                                        </StackPanel>
+                                                        <ItemsControl ItemsSource="{Binding Parameters}" Margin="0,6,0,0"
+                                                                      Visibility="{Binding HasParameters, Converter={StaticResource BoolToVisibility}}">
+                                                            <ItemsControl.ItemTemplate>
+                                                                <DataTemplate>
+                                                                    <Grid Margin="0,2">
+                                                                        <Grid.ColumnDefinitions>
+                                                                            <ColumnDefinition Width="180" />
+                                                                            <ColumnDefinition Width="*" />
+                                                                        </Grid.ColumnDefinitions>
+                                                                        <TextBlock Grid.Column="0" Style="{StaticResource FieldName}"
+                                                                                   Text="{Binding Description}" VerticalAlignment="Center"
+                                                                                   Margin="0,0,10,0" />
+                                                                        <TextBox Grid.Column="1" Height="26" MaxWidth="320"
+                                                                                 HorizontalAlignment="Left" MinWidth="200"
+                                                                                 VerticalContentAlignment="Center"
+                                                                                 Text="{Binding Value, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                                                    </Grid>
+                                                                </DataTemplate>
+                                                            </ItemsControl.ItemTemplate>
+                                                        </ItemsControl>
+                                                        <TextBlock Text="{Binding DisabledReason}" Foreground="#B45309"
+                                                                   FontSize="11" TextWrapping="Wrap" Margin="0,6,0,0"
+                                                                   Visibility="{Binding ShowDisabledReason, Converter={StaticResource BoolToVisibility}}" />
+                                                    </StackPanel>
+                                                </Grid>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                            </DockPanel>
+                        </Border>
+
+                        <Border Grid.Column="1" Style="{StaticResource CardBorder}">
+                            <DockPanel>
+                                <TextBlock DockPanel.Dock="Top" Style="{StaticResource CardTitle}" Text="执行结果" />
+                                <TextBlock DockPanel.Dock="Top" FontSize="12" Foreground="#9CA3AF"
+                                           TextWrapping="Wrap" Margin="0,0,0,6"
+                                           Text="尚未执行任何动作。执行记录与回滚信息会写入 U 盘备份区（data\backup\actions）。" />
+                                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                    <ItemsControl x:Name="ActionResultList">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border BorderBrush="#F3F4F6" BorderThickness="0,0,0,1" Padding="0,9">
+                                                    <StackPanel>
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <Border CornerRadius="10" Padding="8,2" VerticalAlignment="Center"
+                                                                    Background="{Binding Outcome, Converter={StaticResource ActionOutcomeBrush}}">
+                                                                <TextBlock FontSize="11" Foreground="White" Text="{Binding OutcomeText}" />
+                                                            </Border>
+                                                            <TextBlock Text="{Binding HeaderText}" FontWeight="SemiBold" FontSize="13"
+                                                                       TextWrapping="Wrap" Margin="10,0,0,0" VerticalAlignment="Center" />
+                                                        </StackPanel>
+                                                        <TextBlock Text="{Binding DetailText}" Foreground="#6B7280" FontSize="11"
+                                                                   TextWrapping="Wrap" Margin="0,4,0,0" />
+                                                        <TextBlock Text="{Binding ErrorText}" FontFamily="Consolas" FontSize="11"
+                                                                   Foreground="#B91C1C" TextWrapping="Wrap" Margin="0,3,0,0"
+                                                                   Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}" />
+                                                        <TextBlock Text="{Binding OutputText}" FontFamily="Consolas" FontSize="11"
+                                                                   Foreground="#374151" TextWrapping="Wrap" Margin="0,3,0,0"
+                                                                   Visibility="{Binding HasOutput, Converter={StaticResource BoolToVisibility}}" />
+                                                    </StackPanel>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </ScrollViewer>
+                            </DockPanel>
                         </Border>
                     </Grid>
                 </Grid>

@@ -8,7 +8,7 @@ public class ActionOrderingTests
 {
     /// <summary>构造一个动作描述对象，便于测试。</summary>
     private static ActionDescriptor Action(string name, RiskLevel risk, bool requiresRestart = false)
-        => new() { Name = name, Risk = risk, RequiresRestart = requiresRestart };
+        => new() { ActionId = name, Name = name, Risk = risk, RequiresRestart = requiresRestart };
 
     /// <summary>混合风险场景：不需重启的动作按风险升序在前，需重启的动作统一排到最后。</summary>
     [Fact]

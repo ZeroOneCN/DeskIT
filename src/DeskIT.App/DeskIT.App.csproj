@@ -5,6 +5,11 @@
     <ProjectReference Include="..\DeskIT.Windows\DeskIT.Windows.csproj" />
   </ItemGroup>
 
+  <!-- 修复动作定义随程序一并分发：发布后位于可执行文件同级的 actions\ 目录。 -->
+  <ItemGroup>
+    <None Include="..\..\actions\*.json" Link="actions\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>

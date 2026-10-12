@@ -1,0 +1,76 @@
+[
+  {
+    "actionId": "printing.start-spooler",
+    "name": "重启打印后台处理服务",
+    "risk": "Low",
+    "scene": "PrintingSharing",
+    "summary": "重启 Spooler 服务，用于打印任务卡死、打印机脱机、无法添加打印机等场景。",
+    "requiresRestart": false,
+    "canRollback": false,
+    "rollbackNote": "服务重启后仍为运行状态，无需回滚。",
+    "requiresAdministrator": true,
+    "timeoutSeconds": 120,
+    "preconditions": [
+      { "kind": "ServiceExists", "value": "Spooler", "description": "打印后台处理服务（Spooler）不存在，无法重启。" }
+    ],
+    "script": "Restart-Service -Name Spooler -Force -ErrorAction Stop\nWrite-Output '已重启打印后台处理服务（Spooler）。'"
+  },
+  {
+    "actionId": "printing.clear-queue",
+    "name": "清理打印队列",
+    "risk": "Low",
+    "scene": "PrintingSharing",
+    "summary": "停止后台处理服务并清空待打印作业，用于队列卡住导致后续文档无法打印。待打印作业将被丢弃。",
+    "requiresRestart": false,
+    "canRollback": false,
+    "rollbackNote": "被丢弃的待打印作业无法恢复，需重新打印。",
+    "requiresAdministrator": true,
+    "timeoutSeconds": 180,
+    "script": "Stop-Service -Name Spooler -Force -ErrorAction SilentlyContinue\n$spool = Join-Path $env:SystemRoot 'System32\\spool\\PRINTERS'\n$files = Get-ChildItem -Path $spool -File -ErrorAction SilentlyContinue\n$files | Remove-Item -Force -ErrorAction SilentlyContinue\nStart-Service -Name Spooler -ErrorAction SilentlyContinue\nWrite-Output ('已清理打印队列，删除 ' + $files.Count + ' 个待打印作业文件。')"
+  },
+  {
+    "actionId": "printing.set-online",
+    "name": "将打印机设为联机",
+    "risk": "Medium",
+    "scene": "PrintingSharing",
+    "summary": "清除打印机的“脱机使用打印机”状态，用于打印机显示脱机、无法接收任务的问题。",
+    "requiresRestart": false,
+    "canRollback": false,
+    "rollbackNote": "若确需脱机，可在打印机属性中重新勾选“脱机使用打印机”。",
+    "requiresAdministrator": true,
+    "timeoutSeconds": 120,
+    "parameters": [
+      { "name": "Printer", "description": "打印机名称（须与“设备和打印机”中的名称一致）" }
+    ],
+    "script": "$printer = Get-WmiObject -Class Win32_Printer -Filter ('Name=' + {{Printer}}) -ErrorAction SilentlyContinue\nif (-not $printer) { Write-Error ('未找到打印机：' + {{Printer}}); exit 2 }\n$printer.WorkOffline = $false\n$printer.Put() | Out-Null\nWrite-Output ('已将打印机设为联机：' + {{Printer}})"
+  },
+  {
+    "actionId": "printing.set-default",
+    "name": "修复默认打印机设置",
+    "risk": "Medium",
+    "scene": "PrintingSharing",
+    "summary": "把指定打印机设为系统默认打印机，用于默认打印机丢失或被改错导致打印走错设备。",
+    "requiresRestart": false,
+    "canRollback": true,
+    "rollbackNote": "如需恢复原默认打印机，可再次执行本动作并选择原打印机。",
+    "requiresAdministrator": true,
+    "timeoutSeconds": 120,
+    "parameters": [
+      { "name": "Printer", "description": "要设为默认的打印机名称" }
+    ],
+    "script": "$printer = Get-WmiObject -Class Win32_Printer -Filter ('Name=' + {{Printer}}) -ErrorAction SilentlyContinue\nif (-not $printer) { Write-Error ('未找到打印机：' + {{Printer}}); exit 2 }\n$printer.SetDefaultPrinter() | Out-Null\nWrite-Output ('已设为默认打印机：' + {{Printer}})"
+  },
+  {
+    "actionId": "printing.start-share-services",
+    "name": "启用文件共享与打印服务",
+    "risk": "Medium",
+    "scene": "PrintingSharing",
+    "summary": "启动 Server / Workstation / Spooler 服务并设为自动，用于无法访问共享文件夹或共享打印机。",
+    "requiresRestart": false,
+    "canRollback": true,
+    "rollbackNote": "原有启动类型已备份到本次动作的备份文件，可按记录恢复为原启动类型。",
+    "requiresAdministrator": true,
+    "timeoutSeconds": 180,
+    "script": "$services = 'LanmanServer','LanmanWorkstation','Spooler'\n$original = @()\nforeach ($name in $services) {\n  $svc = Get-Service -Name $name -ErrorAction SilentlyContinue\n  if ($svc) { $original += @{ Name = $name; StartType = $svc.StartType.ToString() } }\n}\n$original | ConvertTo-Json | Set-Content -Path {{BackupFile}} -Encoding UTF8\nforeach ($name in $services) {\n  Set-Service -Name $name -StartupType Automatic -ErrorAction SilentlyContinue\n  Start-Service -Name $name -ErrorAction SilentlyContinue\n}\nWrite-Output '已启用文件共享与打印相关服务。'"
+  }
+]

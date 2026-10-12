@@ -1,0 +1,82 @@
+[
+  {
+    "actionId": "network.reset-dns",
+    "name": "刷新 DNS 解析缓存",
+    "risk": "Low",
+    "scene": "Network",
+    "summary": "清空本机 DNS 解析缓存，用于域名解析异常、访问网站跳转错误等场景。影响面小、可重复执行。",
+    "requiresRestart": false,
+    "canRollback": false,
+    "rollbackNote": "缓存为临时数据，无需回滚；刷新后系统会按需重新解析。",
+    "requiresAdministrator": true,
+    "timeoutSeconds": 120,
+    "script": "ipconfig /flushdns | Out-String\nWrite-Output '已刷新 DNS 解析缓存。'"
+  },
+  {
+    "actionId": "network.rebuild-dns-records",
+    "name": "重新注册 DNS 记录",
+    "risk": "Low",
+    "scene": "Network",
+    "summary": "向 DNS 服务器重新注册本机名称与地址记录，用于域内名称解析或共享访问异常。",
+    "requiresRestart": false,
+    "canRollback": false,
+    "rollbackNote": "重新注册不改变本机配置，无需回滚。",
+    "requiresAdministrator": true,
+    "timeoutSeconds": 120,
+    "script": "ipconfig /registerdns | Out-String\nWrite-Output '已重新注册本机 DNS 记录。'"
+  },
+  {
+    "actionId": "network.renew-dhcp",
+    "name": "续租 DHCP 地址",
+    "risk": "Medium",
+    "scene": "Network",
+    "summary": "释放并重新申请 DHCP 地址，用于 IP 冲突、获取到错误网段地址等场景。执行瞬间会短暂断网。",
+    "requiresRestart": false,
+    "canRollback": false,
+    "rollbackNote": "地址由 DHCP 服务器分配，无法回滚到旧地址；如需固定地址请在网络设置中配置。",
+    "requiresAdministrator": true,
+    "timeoutSeconds": 180,
+    "mayInterruptSession": true,
+    "script": "ipconfig /release | Out-String\nipconfig /renew | Out-String\nWrite-Output '已续租 DHCP 地址。'"
+  },
+  {
+    "actionId": "network.reset-stack",
+    "name": "重置网络栈（Winsock / TCP-IP）",
+    "risk": "Medium",
+    "scene": "Network",
+    "summary": "重置 Winsock 目录与 TCP/IP 协议栈，用于顽固性网络异常。当前网络会话会中断，需重启生效。",
+    "requiresRestart": true,
+    "canRollback": false,
+    "rollbackNote": "重置后无法自动恢复原有协议栈状态；如需恢复请在系统还原点回退。",
+    "requiresAdministrator": true,
+    "timeoutSeconds": 300,
+    "mayInterruptSession": true,
+    "script": "netsh winsock reset | Out-String\nnetsh int ip reset | Out-String\nWrite-Output '已重置 Winsock 与 TCP/IP 栈，需重启生效。'"
+  },
+  {
+    "actionId": "network.reset-proxy",
+    "name": "重置代理配置",
+    "risk": "Medium",
+    "scene": "Network",
+    "summary": "清除当前用户的代理服务器与自动配置脚本设置，用于代理残留导致的上网异常。原值会备份到备份区。",
+    "requiresRestart": false,
+    "canRollback": true,
+    "rollbackNote": "原代理配置已备份到本次动作的备份文件，可按记录恢复 ProxyEnable / ProxyServer / AutoConfigURL。",
+    "requiresAdministrator": true,
+    "timeoutSeconds": 120,
+    "script": "$key = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings'\n$backup = @{}\nif (Test-Path $key) {\n  $item = Get-ItemProperty -Path $key\n  $backup = @{ ProxyEnable = $item.ProxyEnable; ProxyServer = $item.ProxyServer; ProxyOverride = $item.ProxyOverride; AutoConfigURL = $item.AutoConfigURL }\n}\n$backup | ConvertTo-Json | Set-Content -Path {{BackupFile}} -Encoding UTF8\nSet-ItemProperty -Path $key -Name ProxyEnable -Value 0 -ErrorAction SilentlyContinue\nRemove-ItemProperty -Path $key -Name ProxyServer -ErrorAction SilentlyContinue\nRemove-ItemProperty -Path $key -Name AutoConfigURL -ErrorAction SilentlyContinue\nWrite-Output '已重置当前用户的代理配置（原值已备份）。'"
+  },
+  {
+    "actionId": "network.enable-discovery",
+    "name": "启用网络发现相关服务",
+    "risk": "Medium",
+    "scene": "Network",
+    "summary": "将网络发现与设备发布相关服务设为手动并启动，用于同一局域网内看不到其他设备的问题。",
+    "requiresRestart": false,
+    "canRollback": true,
+    "rollbackNote": "原有启动类型已备份到本次动作的备份文件，可按记录恢复为原启动类型。",
+    "requiresAdministrator": true,
+    "timeoutSeconds": 180,
+    "script": "$services = 'FDResPub','fdPHost','SSDPSRV','upnphost'\n$original = @()\nforeach ($name in $services) {\n  $svc = Get-Service -Name $name -ErrorAction SilentlyContinue\n  if ($svc) { $original += @{ Name = $name; StartType = $svc.StartType.ToString() } }\n}\n$original | ConvertTo-Json | Set-Content -Path {{BackupFile}} -Encoding UTF8\nforeach ($name in $services) {\n  Set-Service -Name $name -StartupType Manual -ErrorAction SilentlyContinue\n  Start-Service -Name $name -ErrorAction SilentlyContinue\n}\nWrite-Output ('已启用网络发现相关服务：' + ($services -join '、'))"
+  }
+]

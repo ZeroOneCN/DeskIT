@@ -152,7 +152,7 @@ internal static class WindowsDiagnosisItems
                 if (names.Count > 15)
                 {
                     return DiagnosisItemOutput.Hint($"开机启动项偏多（{names.Count} 项），可能拖慢开机速度。", evidence.ToArray())
-                        .WithActions("slowness.trim-startup-items");
+                        .WithActions("startup.trim-startup-items");
                 }
 
                 return DiagnosisItemOutput.Normal($"开机启动项数量正常（{names.Count} 项）。", evidence.ToArray());
@@ -692,7 +692,7 @@ if ($e) { $x = [xml]$e[0].ToXml(); ($x.Event.EventData.Data | Where-Object { $_.
                 var evidence = new[] { new DiagnosisEvidence("最近一次开机耗时", $"{seconds:0.0} 秒") };
                 return seconds >= 60
                     ? DiagnosisItemOutput.Hint($"最近一次开机耗时较长（{seconds:0.0} 秒），建议精简启动项。", evidence)
-                        .WithActions("slowness.trim-startup-items")
+                        .WithActions("startup.trim-startup-items")
                     : DiagnosisItemOutput.Normal($"最近一次开机耗时正常（{seconds:0.0} 秒）。", evidence);
             }, TimeSpan.FromSeconds(25)),
 

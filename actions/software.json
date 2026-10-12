@@ -1,0 +1,34 @@
+[
+  {
+    "actionId": "software.remove-old-version",
+    "name": "卸载指定软件",
+    "risk": "High",
+    "scene": "Software",
+    "summary": "按名称匹配已安装软件并执行其静默卸载命令，用于同功能多版本冲突、旧版本残留导致的故障。",
+    "requiresRestart": false,
+    "canRollback": false,
+    "rollbackNote": "软件卸载无法自动回滚；如需恢复请重新安装对应版本。",
+    "requiresAdministrator": true,
+    "timeoutSeconds": 900,
+    "parameters": [
+      { "name": "SoftwareName", "description": "软件显示名称关键字（模糊匹配“程序和功能”中的名称）" }
+    ],
+    "script": "$name = {{SoftwareName}}\n$paths = @(\n  'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*',\n  'HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*'\n)\n$app = Get-ItemProperty -Path $paths -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like ('*' + $name + '*') } | Select-Object -First 1\nif (-not $app) { Write-Error ('未找到已安装软件：' + $name); exit 2 }\n$command = $app.QuietUninstallString\nif (-not $command) { $command = $app.UninstallString }\nif (-not $command) { Write-Error ('该软件未提供卸载命令：' + $app.DisplayName); exit 3 }\nWrite-Output ('执行卸载：' + $app.DisplayName)\ncmd /c $command\nWrite-Output '卸载命令已执行完成。'"
+  },
+  {
+    "actionId": "software.clean-residue",
+    "name": "清理软件残留目录",
+    "risk": "Medium",
+    "scene": "Software",
+    "summary": "清空指定软件残留目录的内容（保留目录本身），执行前展示将释放的对象数量与体积。",
+    "requiresRestart": false,
+    "canRollback": false,
+    "rollbackNote": "残留目录内容删除后无法恢复。",
+    "requiresAdministrator": true,
+    "timeoutSeconds": 300,
+    "parameters": [
+      { "name": "Path", "description": "软件残留目录完整路径（仅删除目录内容，保留目录本身）" }
+    ],
+    "script": "$target = {{Path}}\nif (-not (Test-Path $target)) { Write-Error ('残留目录不存在：' + $target); exit 2 }\n$items = Get-ChildItem -Path $target -Recurse -Force -ErrorAction SilentlyContinue\n$size = ($items | Measure-Object -Property Length -Sum).Sum\nif (-not $size) { $size = 0 }\nWrite-Output ('将清理 ' + $items.Count + ' 个对象，约 ' + [Math]::Round($size / 1MB, 1) + ' MB')\n$items | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue\nWrite-Output '已清理软件残留目录内容。'"
+  }
+]

@@ -1,0 +1,89 @@
+[
+  {
+    "actionId": "disk.clean-temp-files",
+    "name": "清理用户临时目录",
+    "risk": "Low",
+    "scene": "DiskStorage",
+    "summary": "清理当前用户的临时文件（%TEMP%），执行前先统计将释放的对象数量与体积并输出。",
+    "requiresRestart": false,
+    "canRollback": false,
+    "rollbackNote": "临时文件删除后无法恢复，但系统与应用会按需重新生成。",
+    "requiresAdministrator": true,
+    "timeoutSeconds": 300,
+    "preconditions": [
+      { "kind": "PathExists", "value": "%TEMP%", "description": "当前用户临时目录不存在。" }
+    ],
+    "script": "$target = [System.IO.Path]::GetTempPath()\n$items = Get-ChildItem -Path $target -Recurse -Force -ErrorAction SilentlyContinue\n$size = ($items | Measure-Object -Property Length -Sum).Sum\nif (-not $size) { $size = 0 }\nWrite-Output ('用户临时目录 ' + $target + ' 内 ' + $items.Count + ' 个对象，约 ' + [Math]::Round($size / 1MB, 1) + ' MB')\n$items | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue\nWrite-Output '已清理用户临时目录。'"
+  },
+  {
+    "actionId": "disk.clean-system-temp",
+    "name": "清理系统临时目录",
+    "risk": "Low",
+    "scene": "DiskStorage",
+    "summary": "清理 Windows\\Temp 系统临时文件，执行前先统计将释放的对象数量与体积并输出。",
+    "requiresRestart": false,
+    "canRollback": false,
+    "rollbackNote": "临时文件删除后无法恢复，但系统与应用会按需重新生成。",
+    "requiresAdministrator": true,
+    "timeoutSeconds": 300,
+    "preconditions": [
+      { "kind": "PathExists", "value": "%SystemRoot%\\Temp", "description": "系统临时目录不存在。" }
+    ],
+    "script": "$target = Join-Path $env:SystemRoot 'Temp'\nif (-not (Test-Path $target)) { Write-Error ('系统临时目录不存在：' + $target); exit 2 }\n$items = Get-ChildItem -Path $target -Recurse -Force -ErrorAction SilentlyContinue\n$size = ($items | Measure-Object -Property Length -Sum).Sum\nif (-not $size) { $size = 0 }\nWrite-Output ('系统临时目录内 ' + $items.Count + ' 个对象，约 ' + [Math]::Round($size / 1MB, 1) + ' MB')\n$items | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue\nWrite-Output '已清理系统临时目录。'"
+  },
+  {
+    "actionId": "disk.clean-icon-cache",
+    "name": "清理图标与缩略图缓存",
+    "risk": "Low",
+    "scene": "DiskStorage",
+    "summary": "删除资源管理器的图标与缩略图缓存文件，用于图标显示错乱、缩略图不刷新。正被占用的文件会在资源管理器重启后清除。",
+    "requiresRestart": false,
+    "canRollback": false,
+    "rollbackNote": "缓存删除后无法恢复，资源管理器会按需重建。",
+    "requiresAdministrator": true,
+    "timeoutSeconds": 180,
+    "script": "$target = Join-Path $env:LOCALAPPDATA 'Microsoft\\Windows\\Explorer'\n$removed = 0\nforeach ($pattern in 'iconcache*','thumbcache*') {\n  $files = Get-ChildItem -Path $target -Filter $pattern -Force -ErrorAction SilentlyContinue\n  foreach ($file in $files) { Remove-Item -Path $file.FullName -Force -ErrorAction SilentlyContinue; $removed++ }\n}\nWrite-Output ('已清理图标与缩略图缓存文件 ' + $removed + ' 个（正被占用的文件会在资源管理器重启后清除）。')"
+  },
+  {
+    "actionId": "disk.empty-recycle-bin",
+    "name": "清空回收站",
+    "risk": "Irreversible",
+    "scene": "DiskStorage",
+    "summary": "清空回收站内全部项目，执行前展示文件数量与体积。删除后无法恢复。",
+    "requiresRestart": false,
+    "canRollback": false,
+    "rollbackNote": "回收站内容被彻底删除，无恢复途径。",
+    "requiresAdministrator": true,
+    "timeoutSeconds": 300,
+    "script": "$shell = New-Object -ComObject Shell.Application\n$bin = $shell.NameSpace(10)\n$count = 0\n$size = 0\nforeach ($item in $bin.Items()) { $count++; $size += $item.Size }\nWrite-Output ('回收站内 ' + $count + ' 个对象，约 ' + [Math]::Round($size / 1MB, 1) + ' MB')\nClear-RecycleBin -Force -Confirm:$false -ErrorAction SilentlyContinue\nWrite-Output '已清空回收站（删除后无法恢复）。'"
+  },
+  {
+    "actionId": "disk.purge-temp-dir",
+    "name": "清空指定临时目录",
+    "risk": "Irreversible",
+    "scene": "DiskStorage",
+    "summary": "清空指定目录下的全部内容（保留目录本身），执行前展示将释放的对象数量与体积。删除后无法恢复。",
+    "requiresRestart": false,
+    "canRollback": false,
+    "rollbackNote": "目录内容被彻底删除，无恢复途径。",
+    "requiresAdministrator": true,
+    "timeoutSeconds": 300,
+    "parameters": [
+      { "name": "Path", "description": "要清空的目录完整路径（仅删除目录内容，保留目录本身）" }
+    ],
+    "script": "$target = {{Path}}\nif (-not (Test-Path $target)) { Write-Error ('指定目录不存在：' + $target); exit 2 }\n$items = Get-ChildItem -Path $target -Recurse -Force -ErrorAction SilentlyContinue\n$size = ($items | Measure-Object -Property Length -Sum).Sum\nif (-not $size) { $size = 0 }\nWrite-Output ('将清理 ' + $items.Count + ' 个对象，约 ' + [Math]::Round($size / 1MB, 1) + ' MB')\n$items | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue\nWrite-Output '已清空指定目录内容。'"
+  },
+  {
+    "actionId": "disk.check-repair-system-drive",
+    "name": "检查并修复系统盘",
+    "risk": "High",
+    "scene": "DiskStorage",
+    "summary": "对系统盘执行在线扫描（chkdsk /scan），检查文件系统与磁盘错误。耗时较长，发现问题时按提示进一步修复。",
+    "requiresRestart": false,
+    "canRollback": false,
+    "rollbackNote": "在线扫描为只读检查，不需要回滚；若执行修复类操作请先创建系统还原点。",
+    "requiresAdministrator": true,
+    "timeoutSeconds": 900,
+    "script": "chkdsk $env:SystemDrive /scan | Out-String\nWrite-Output '已完成系统盘在线扫描。'"
+  }
+]

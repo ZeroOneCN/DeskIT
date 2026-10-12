@@ -1,0 +1,86 @@
+[
+  {
+    "actionId": "startup.trim-startup-items",
+    "name": "清理指定开机启动项",
+    "risk": "High",
+    "scene": "StartupSystem",
+    "summary": "按名称匹配并移除注册表中的开机启动项，影响开机加载行为。原启动项配置会先备份到备份区。",
+    "requiresRestart": false,
+    "canRollback": true,
+    "rollbackNote": "被移除的启动项名称与命令行已备份到本次动作的备份文件，可按记录重新写回 Run 键。",
+    "requiresAdministrator": true,
+    "timeoutSeconds": 180,
+    "parameters": [
+      { "name": "ItemName", "description": "启动项名称关键字（模糊匹配，留空将不匹配任何项）" }
+    ],
+    "script": "$match = {{ItemName}}\n$keys = @(\n  'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run',\n  'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run',\n  'HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Run'\n)\n$removed = @()\nforeach ($key in $keys) {\n  if (-not (Test-Path $key)) { continue }\n  $item = Get-ItemProperty -Path $key\n  foreach ($property in $item.PSObject.Properties) {\n    if ($property.Name -like 'PS*') { continue }\n    if ($property.Name -like ('*' + $match + '*')) {\n      $removed += @{ Key = $key; Name = $property.Name; Value = $property.Value }\n      Remove-ItemProperty -Path $key -Name $property.Name -ErrorAction SilentlyContinue\n    }\n  }\n}\n$removed | ConvertTo-Json | Set-Content -Path {{BackupFile}} -Encoding UTF8\nWrite-Output ('已移除 ' + $removed.Count + ' 个匹配的开机启动项（原值已备份）。')"
+  },
+  {
+    "actionId": "system.repair-system-files",
+    "name": "系统文件完整性检查与修复",
+    "risk": "High",
+    "scene": "StartupSystem",
+    "summary": "执行 sfc /scannow 扫描并修复受保护的系统文件。耗时较长（可能超过 10 分钟），部分修复需重启生效。",
+    "requiresRestart": true,
+    "canRollback": false,
+    "rollbackNote": "系统文件被替换为官方版本，无法回滚；如需回退请使用系统还原点。",
+    "requiresAdministrator": true,
+    "timeoutSeconds": 900,
+    "script": "sfc /scannow | Out-String\nWrite-Output '系统文件完整性检查与修复已完成（如需重启请按提示操作）。'"
+  },
+  {
+    "actionId": "system.repair-update-components",
+    "name": "修复系统更新组件",
+    "risk": "High",
+    "scene": "StartupSystem",
+    "summary": "停用更新相关服务并重命名 SoftwareDistribution 目录，用于 Windows 更新失败或卡住。原目录会被保留（重命名）。",
+    "requiresRestart": false,
+    "canRollback": true,
+    "rollbackNote": "原 SoftwareDistribution 目录已重命名保留，可按需改回原名恢复更新历史缓存。",
+    "requiresAdministrator": true,
+    "timeoutSeconds": 300,
+    "script": "$services = 'wuauserv','bits','cryptsvc'\nforeach ($name in $services) { Stop-Service -Name $name -Force -ErrorAction SilentlyContinue }\n$source = Join-Path $env:SystemRoot 'SoftwareDistribution'\n$newName = 'SoftwareDistribution.old.' + (Get-Date -Format 'yyyyMMddHHmmss')\nif (Test-Path $source) { Rename-Item -Path $source -NewName $newName -ErrorAction SilentlyContinue }\nforeach ($name in $services) { Start-Service -Name $name -ErrorAction SilentlyContinue }\nWrite-Output ('已重置系统更新组件；原目录已重命名为 ' + $newName)"
+  },
+  {
+    "actionId": "system.reregister-components",
+    "name": "重新注册系统脚本组件",
+    "risk": "Medium",
+    "scene": "StartupSystem",
+    "summary": "重新注册 jscript / vbscript / mshtml 等系统组件，用于特定脚本或网页组件失效引发的故障。",
+    "requiresRestart": false,
+    "canRollback": false,
+    "rollbackNote": "重新注册不改变组件版本，无需回滚。",
+    "requiresAdministrator": true,
+    "timeoutSeconds": 180,
+    "script": "$folder = Join-Path $env:SystemRoot 'System32'\nforeach ($name in 'jscript.dll','vbscript.dll','mshtml.dll') {\n  $file = Join-Path $folder $name\n  if (Test-Path $file) { regsvr32 /s $file }\n}\nWrite-Output '已重新注册系统脚本组件（jscript / vbscript / mshtml）。'"
+  },
+  {
+    "actionId": "system.enable-restore",
+    "name": "启用系统还原",
+    "risk": "Medium",
+    "scene": "StartupSystem",
+    "summary": "为系统盘启用系统还原保护，便于后续变更前自动创建还原点。",
+    "requiresRestart": false,
+    "canRollback": true,
+    "rollbackNote": "如需关闭，可在“系统保护”中停用该驱动器的保护。",
+    "requiresAdministrator": true,
+    "timeoutSeconds": 300,
+    "parameters": [
+      { "name": "Drive", "description": "要启用系统还原的驱动器（形如 C:\\）", "defaultValue": "C:\\" }
+    ],
+    "script": "$drive = {{Drive}}\nEnable-ComputerRestore -Drive $drive -ErrorAction Stop\nWrite-Output ('已为 ' + $drive + ' 启用系统还原。')"
+  },
+  {
+    "actionId": "startup.check-drivers",
+    "name": "重新扫描并修复问题驱动设备",
+    "risk": "High",
+    "scene": "StartupSystem",
+    "summary": "重新扫描设备并尝试为异常设备安装驱动（pnputil /scan-devices），用于设备管理器出现感叹号的设备。",
+    "requiresRestart": true,
+    "canRollback": false,
+    "rollbackNote": "驱动变更无法自动回滚；如需回退请在设备管理器中回滚驱动程序。",
+    "requiresAdministrator": true,
+    "timeoutSeconds": 300,
+    "script": "pnputil /scan-devices | Out-String\nWrite-Output '已重新扫描设备并尝试为异常设备安装驱动（如需重启请按提示操作）。'"
+  }
+]

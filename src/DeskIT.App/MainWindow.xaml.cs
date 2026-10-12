@@ -1,9 +1,14 @@
 ﻿using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Media;
 using DeskIT.Core;
 using DeskIT.Windows;
 
@@ -32,6 +37,16 @@ public partial class MainWindow : Window
     private CancellationTokenSource? _diagnosisCancellation;
     private bool _diagnosing;
 
+    private readonly IActionLibraryLoader _actionLibraryLoader = new ActionLibraryLoader();
+    private readonly IActionExecutor _actionExecutor = new ActionExecutor();
+    private readonly ObservableCollection<ActionResultView> _actionResults = new();
+    private ActionLibrary? _actionLibrary;
+    private IReadOnlyList<ActionItemView> _actionViews = Array.Empty<ActionItemView>();
+    private IReadOnlyDictionary<string, string> _actionNameById = new Dictionary<string, string>();
+    private CancellationTokenSource? _actionCancellation;
+    private bool _acting;
+    private string _lastSessionId = string.Empty;
+
     private PrivilegeLevel _privilege;
     private bool _advancedModeEnabled;
     private StartupVerdict? _verdict;
@@ -58,6 +73,8 @@ public partial class MainWindow : Window
 
         InitializeComponent();
 
+        ActionResultList.ItemsSource = _actionResults;
+
         _guard.ActivationRequested += OnActivationRequested;
         Loaded += OnLoaded;
         Closed += OnClosed;
@@ -79,6 +96,7 @@ public partial class MainWindow : Window
         _guard.ActivationRequested -= OnActivationRequested;
         _collectionCancellation?.Cancel();
         _diagnosisCancellation?.Cancel();
+        _actionCancellation?.Cancel();
     }
 
     /// <summary>收到其他实例的激活请求：恢复并前置窗口，并提示已存在的实例。</summary>
@@ -226,6 +244,9 @@ public partial class MainWindow : Window
             : isStandard
                 ? "启动自检完成。当前为只读诊断模式；如需执行修复，请先以管理员身份重新启动。"
                 : "启动自检完成。当前为管理员模式，可执行采集、诊断与修复。";
+
+        // 修复动作库（M4）：加载动作定义并按当前运行条件计算可用性。
+        EnsureActionLibraryLoaded();
     }
 
     /// <summary>生成带勾选标记的能力条目文本。</summary>
@@ -681,6 +702,9 @@ public partial class MainWindow : Window
         var report = outcome.Report;
         var summary = report.Summary;
 
+        // 记录本次诊断会话标识，供后续修复动作执行记录关联。
+        _lastSessionId = outcome.Session.SessionId;
+
         DiagnosisFindingList.ItemsSource = DiagnosisRules.SortFindings(report.AllFindings)
             .Select(BuildFindingView)
             .ToList();
@@ -696,15 +720,12 @@ public partial class MainWindow : Window
     /// <summary>把诊断结论转换为界面视图。</summary>
     /// <param name="finding">诊断结论。</param>
     /// <returns>供列表与详情面板绑定的视图对象。</returns>
-    private static DiagnosisFindingView BuildFindingView(DiagnosisFinding finding)
+    private DiagnosisFindingView BuildFindingView(DiagnosisFinding finding)
     {
         var sceneName = DiagnosisRules.DescribeScene(finding.Scene);
         var evidence = finding.Evidence
             .Select(item => new DiagnosisEvidenceView(item.Label, string.IsNullOrWhiteSpace(item.Value) ? "（无）" : item.Value!))
             .ToList();
-        var actions = finding.SuggestedActionIds.Count == 0
-            ? "暂无建议动作（修复动作库 M4 落地后补充）。"
-            : string.Join("、", finding.SuggestedActionIds);
 
         return new DiagnosisFindingView(
             finding.FindingId,
@@ -716,9 +737,25 @@ public partial class MainWindow : Window
             finding.Reason,
             $"耗时 {finding.Elapsed.TotalSeconds:0.0} 秒",
             evidence,
-            actions,
+            DescribeSuggestedActions(finding),
             $"{sceneName} · {finding.Name}",
             finding.Status == DiagnosisExecutionStatus.SkippedNeedsAdministrator);
+    }
+
+    /// <summary>
+    /// 把诊断项建议的动作标识映射为“动作名称（标识）”；动作库未收录的标识原样展示。
+    /// </summary>
+    /// <param name="finding">诊断结论。</param>
+    /// <returns>建议动作文本。</returns>
+    private string DescribeSuggestedActions(DiagnosisFinding finding)
+    {
+        if (finding.SuggestedActionIds.Count == 0)
+        {
+            return "暂无建议动作。";
+        }
+
+        return string.Join("、", finding.SuggestedActionIds.Select(actionId =>
+            _actionNameById.TryGetValue(actionId, out var name) ? $"{name}（{actionId}）" : actionId));
     }
 
     /// <summary>切换诊断忙碌态（诊断期间禁用触发与场景勾选，启用中止按钮）。</summary>
@@ -735,5 +772,426 @@ public partial class MainWindow : Window
         DiagSceneStartupCheck.IsEnabled = !busy;
         DiagSceneSoftwareCheck.IsEnabled = !busy;
         DiagSceneAccountCheck.IsEnabled = !busy;
+    }
+
+    /// <summary>
+    /// 确保动作库已加载：首次调用读取 U 盘 <c>actions/</c> 定义、按规则排序并构建视图；
+    /// 随后刷新定义问题提示与列表。
+    /// </summary>
+    private void EnsureActionLibraryLoaded()
+    {
+        if (_actionLibrary is null)
+        {
+            _actionLibrary = _actionLibraryLoader.Load(_programDirectory);
+            _actionNameById = _actionLibrary.Actions
+                .ToDictionary(action => action.ActionId, action => action.Name, StringComparer.OrdinalIgnoreCase);
+            _actionViews = ActionOrdering.OrderActions(_actionLibrary.Actions)
+                .Select(action => new ActionItemView(action, CanRunAction(action, out var reason), reason))
+                .ToList();
+        }
+
+        var problems = _actionLibrary.Problems;
+        ActionProblemText.Text = problems.Count == 0
+            ? string.Empty
+            : "动作定义问题：" + string.Join(" ", problems);
+        ActionProblemText.Visibility = problems.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+
+        ApplyActionFilter();
+        UpdateActionLibraryText();
+    }
+
+    /// <summary>
+    /// 判断动作在当前运行条件下是否可执行，并给出不可执行原因。
+    /// 只读诊断模式、启动自检未通过或介质可用空间不足时，动作库全部或部分禁用。
+    /// </summary>
+    /// <param name="action">动作定义。</param>
+    /// <param name="reason">不可执行原因；可执行时为 null。</param>
+    /// <returns>可执行返回 true。</returns>
+    private bool CanRunAction(ActionDescriptor action, out string? reason)
+    {
+        if (_verdict is null || !_verdict.CanStart)
+        {
+            reason = "启动自检未通过：修复动作库已禁用。";
+            return false;
+        }
+
+        if (!ActionRules.CanRunByPrivilege(action, _privilege))
+        {
+            reason = "只读诊断模式：该项需要管理员权限，当前已禁用。";
+            return false;
+        }
+
+        if (!_verdict.Capabilities.CanFix)
+        {
+            reason = "当前运行条件下不允许执行修复动作。";
+            return false;
+        }
+
+        if (!_verdict.Capabilities.CanStartNewSession)
+        {
+            reason = "介质可用空间低于 200 MB：已停止开始新的执行会话，请先归档或更换介质。";
+            return false;
+        }
+
+        reason = null;
+        return true;
+    }
+
+    /// <summary>按搜索关键词过滤动作清单（名称 / 影响 / 标识 / 场景，忽略大小写）。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private void OnActionSearchChanged(object sender, TextChangedEventArgs e)
+    {
+        if (_actionLibrary is null)
+        {
+            return;
+        }
+
+        ApplyActionFilter();
+        UpdateActionLibraryText();
+    }
+
+    /// <summary>把当前搜索关键词应用到动作清单。</summary>
+    private void ApplyActionFilter()
+    {
+        var keyword = ActionSearchBox?.Text?.Trim() ?? string.Empty;
+        ActionList.ItemsSource = keyword.Length == 0
+            ? _actionViews
+            : _actionViews.Where(view => Matches(view, keyword)).ToList();
+    }
+
+    /// <summary>判断动作视图是否命中搜索关键词。</summary>
+    /// <param name="view">动作视图。</param>
+    /// <param name="keyword">关键词。</param>
+    /// <returns>命中返回 true。</returns>
+    private static bool Matches(ActionItemView view, string keyword)
+        => view.Name.Contains(keyword, StringComparison.OrdinalIgnoreCase)
+           || view.Summary.Contains(keyword, StringComparison.OrdinalIgnoreCase)
+           || view.ActionId.Contains(keyword, StringComparison.OrdinalIgnoreCase)
+           || view.SceneName.Contains(keyword, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>刷新动作库状态文案与“执行勾选动作”按钮可用性。</summary>
+    private void UpdateActionLibraryText()
+    {
+        if (_actionLibrary is null)
+        {
+            return;
+        }
+
+        var total = _actionViews.Count;
+        var shown = (ActionList.ItemsSource as IEnumerable<ActionItemView>)?.Count() ?? total;
+        var runnable = _actionViews.Count(view => view.CanRun);
+        var status = runnable > 0 ? $"可执行 {runnable} / {total} 项" : "当前模式下全部禁用";
+        var filterNote = shown == total ? string.Empty : $"（搜索命中 {shown} 项）";
+
+        ActionLibraryText.Text = $"动作库：共 {total} 项，{status}{filterNote}。";
+        RunActionsButton.IsEnabled = !_acting && runnable > 0;
+    }
+
+    /// <summary>点击“执行勾选动作”：校验并确认后按顺序执行勾选动作。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private async void OnRunActionsClick(object sender, RoutedEventArgs e)
+    {
+        if (_acting)
+        {
+            return;
+        }
+
+        if (_verdict is null || !_verdict.CanStart)
+        {
+            MessageBox.Show(this, "启动自检未通过，暂不能执行修复动作。", "DeskIT", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        if (!_verdict.IsAdministrator)
+        {
+            MessageBox.Show(this, "当前为只读诊断模式，修复动作库全部禁用。请先以管理员身份重新启动。",
+                "DeskIT", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var selected = _actionViews.Where(view => view.IsSelected && view.CanRun).ToList();
+        if (selected.Count == 0)
+        {
+            MessageBox.Show(this, "请先勾选至少一个要执行的动作。", "DeskIT", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var missing = selected
+            .Where(view => ActionRules.MissingParameters(view.Action, view.ParameterValues()).Count > 0)
+            .ToList();
+        if (missing.Count > 0)
+        {
+            var detail = string.Join("；", missing.Select(view =>
+                $"{view.Name}（缺少：{string.Join("、", ActionRules.MissingParameters(view.Action, view.ParameterValues()))}）"));
+            MessageBox.Show(this, $"以下动作缺少必填参数，请填写后再执行：\n{detail}",
+                "DeskIT", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        if (!ConfirmActions(selected))
+        {
+            return;
+        }
+
+        await RunActionsAsync(selected);
+    }
+
+    /// <summary>点击“中止后续动作”：终止当前动作并跳过其余勾选动作。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private void OnCancelActionsClick(object sender, RoutedEventArgs e)
+    {
+        _actionCancellation?.Cancel();
+        ActionProgressText.Text = "正在中止：将终止当前动作，并跳过其余勾选动作…";
+    }
+
+    /// <summary>
+    /// 执行前的确认流程：不可逆动作逐项输入确认词，高风险动作逐项二次确认，
+    /// 最后以汇总区明示本次将执行的变更（含“可能中断会话”提示）。
+    /// </summary>
+    /// <param name="selected">本次勾选且可执行的动作清单（已按执行顺序排列）。</param>
+    /// <returns>全部确认通过返回 true；任一环节取消返回 false。</returns>
+    private bool ConfirmActions(IReadOnlyList<ActionItemView> selected)
+    {
+        foreach (var view in selected.Where(item => item.IsIrreversible))
+        {
+            if (!PromptConfirmWord(view))
+            {
+                return false;
+            }
+        }
+
+        foreach (var view in selected.Where(item => item.IsHighRisk && !item.IsIrreversible))
+        {
+            var answer = MessageBox.Show(
+                this,
+                $"即将执行高风险动作：{view.Name}\n\n影响：{view.Summary}\n回滚：{view.RollbackText}\n\n确认执行该项？",
+                "高风险动作确认（逐项）",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning);
+
+            if (answer != MessageBoxResult.Yes)
+            {
+                return false;
+            }
+        }
+
+        var summary = new StringBuilder();
+        summary.AppendLine("本次将执行以下变更（按执行顺序，需重启的排最后）：");
+        foreach (var view in selected)
+        {
+            summary.Append("· [").Append(ActionRules.DescribeRisk(view.Risk)).Append("] ").Append(view.Name);
+            if (view.RequiresRestart)
+            {
+                summary.Append("（需重启生效）");
+            }
+
+            summary.AppendLine();
+        }
+
+        if (selected.Any(view => view.Action.MayInterruptSession))
+        {
+            summary.AppendLine();
+            summary.AppendLine("提示：本次包含可能中断当前会话的动作（如重置网络），执行后连接可能短暂中断。");
+        }
+
+        summary.AppendLine();
+        summary.Append("确认执行？");
+
+        var confirmed = MessageBox.Show(
+            this,
+            summary.ToString(),
+            "执行修复动作（汇总确认）",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question);
+
+        return confirmed == MessageBoxResult.Yes;
+    }
+
+    /// <summary>
+    /// 弹出不可逆动作确认窗口：要求输入确认词后方可继续。
+    /// </summary>
+    /// <param name="view">不可逆动作视图。</param>
+    /// <returns>确认词正确且点击“确认执行”返回 true；否则返回 false。</returns>
+    private bool PromptConfirmWord(ActionItemView view)
+    {
+        var window = new Window
+        {
+            Title = "不可逆动作确认",
+            Width = 480,
+            SizeToContent = SizeToContent.Height,
+            ResizeMode = ResizeMode.NoResize,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Owner = this,
+            ShowInTaskbar = false
+        };
+
+        var panel = new StackPanel { Margin = new Thickness(18) };
+        panel.Children.Add(new TextBlock
+        {
+            Text = $"即将执行不可逆动作：{view.Name}",
+            FontWeight = FontWeights.SemiBold,
+            FontSize = 14,
+            TextWrapping = TextWrapping.Wrap
+        });
+        panel.Children.Add(new TextBlock
+        {
+            Text = view.Summary,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 6, 0, 0),
+            Foreground = new SolidColorBrush(Color.FromRgb(0x6B, 0x72, 0x80))
+        });
+        panel.Children.Add(new TextBlock
+        {
+            Text = $"该动作不可回滚。请输入确认词 {ActionRules.IrreversibleConfirmWord} 以继续：",
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 10, 0, 0)
+        });
+
+        var input = new TextBox
+        {
+            Margin = new Thickness(0, 6, 0, 0),
+            Height = 28,
+            VerticalContentAlignment = VerticalAlignment.Center
+        };
+        panel.Children.Add(input);
+
+        var buttons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Margin = new Thickness(0, 14, 0, 0)
+        };
+        var cancel = new Button { Content = "取消", Width = 90, Height = 30, IsCancel = true };
+        var confirm = new Button
+        {
+            Content = "确认执行",
+            Width = 110,
+            Height = 30,
+            Margin = new Thickness(8, 0, 0, 0),
+            IsDefault = true,
+            IsEnabled = false
+        };
+        buttons.Children.Add(cancel);
+        buttons.Children.Add(confirm);
+        panel.Children.Add(buttons);
+
+        input.TextChanged += (_, _) =>
+            confirm.IsEnabled = string.Equals(
+                input.Text.Trim(), ActionRules.IrreversibleConfirmWord, StringComparison.Ordinal);
+        cancel.Click += (_, _) => window.DialogResult = false;
+        confirm.Click += (_, _) => window.DialogResult = true;
+
+        window.Content = panel;
+        return window.ShowDialog() == true;
+    }
+
+    /// <summary>
+    /// 按顺序执行勾选动作：逐项调用统一执行器，实时追加结果；中止后跳过其余动作。
+    /// </summary>
+    /// <param name="selected">本次勾选且可执行的动作清单（已按执行顺序排列）。</param>
+    /// <returns>无返回值的异步任务。</returns>
+    private async Task RunActionsAsync(IReadOnlyList<ActionItemView> selected)
+    {
+        _acting = true;
+        SetActingBusy(true);
+        _actionResults.Clear();
+        ActionProgressBar.Value = 0;
+        ActionProgressText.Text = $"即将执行 {selected.Count} 项动作（只读与低风险动作无需确认）。";
+
+        _actionCancellation = new CancellationTokenSource();
+        var token = _actionCancellation.Token;
+        var completed = 0;
+
+        try
+        {
+            foreach (var view in selected)
+            {
+                if (token.IsCancellationRequested)
+                {
+                    break;
+                }
+
+                ActionProgressText.Text = $"正在执行：{view.Name}（{completed + 1}/{selected.Count}）";
+
+                var result = await _actionExecutor.ExecuteAsync(
+                    view.Action,
+                    view.ParameterValues(),
+                    _privilege,
+                    _dataDirectory,
+                    _lastSessionId,
+                    token);
+
+                _actionResults.Add(BuildActionResultView(result));
+                completed++;
+
+                if (result.Outcome == ActionOutcome.Cancelled)
+                {
+                    break;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"执行修复动作时发生异常：{ex.Message}", "DeskIT", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            var cancelled = token.IsCancellationRequested;
+            ActionProgressBar.Value = selected.Count == 0 ? 0 : completed * 100.0 / selected.Count;
+            ActionProgressText.Text = cancelled
+                ? $"已中止：已完成 {completed} / {selected.Count} 项，其余动作未执行。"
+                : $"执行完成：共 {completed} 项动作（详见右侧结果）。";
+
+            _acting = false;
+            _actionCancellation?.Dispose();
+            _actionCancellation = null;
+            SetActingBusy(false);
+            UpdateActionLibraryText();
+        }
+    }
+
+    /// <summary>把动作执行结果转换为界面视图。</summary>
+    /// <param name="result">动作执行结果。</param>
+    /// <returns>供结果列表绑定的视图对象。</returns>
+    private static ActionResultView BuildActionResultView(ActionExecutionResult result)
+    {
+        var detail = new StringBuilder();
+        detail.Append("风险：").Append(ActionRules.DescribeRisk(result.Risk));
+        detail.Append(" · 退出码：").Append(result.ExitCode.ToString(CultureInfo.InvariantCulture));
+        detail.Append(" · 耗时 ").Append(result.Duration.TotalSeconds.ToString("0.0", CultureInfo.InvariantCulture)).Append(" 秒");
+        if (result.TimedOut)
+        {
+            detail.Append(" · 已超时终止");
+        }
+
+        var output = result.StandardOutput.Trim();
+        var error = result.StandardError.Trim();
+        if (!string.IsNullOrEmpty(result.Reason))
+        {
+            error = error.Length == 0 ? result.Reason! : result.Reason + "\n" + error;
+        }
+
+        return new ActionResultView(
+            result.ActionName,
+            result.Outcome,
+            ActionRules.DescribeOutcome(result.Outcome),
+            detail.ToString(),
+            output,
+            error,
+            output.Length > 0,
+            error.Length > 0);
+    }
+
+    /// <summary>切换动作执行忙碌态（执行期间禁用触发、搜索与清单，启用中止按钮）。</summary>
+    /// <param name="busy">是否正在执行。</param>
+    private void SetActingBusy(bool busy)
+    {
+        RunActionsButton.IsEnabled = !busy;
+        CancelActionsButton.IsEnabled = busy;
+        ActionList.IsEnabled = !busy;
+        ActionSearchBox.IsEnabled = !busy;
     }
 }

@@ -1,0 +1,28 @@
+[
+  {
+    "actionId": "account.enable-uac",
+    "name": "启用用户账户控制（UAC）",
+    "risk": "High",
+    "scene": "AccountPrivilege",
+    "summary": "启用 UAC 并恢复默认提示行为，用于 UAC 被关闭带来的安全风险。原值会备份到备份区，需重启生效。",
+    "requiresRestart": true,
+    "canRollback": true,
+    "rollbackNote": "原有 EnableLUA / ConsentPromptBehaviorAdmin / PromptOnSecureDesktop 已备份到本次动作的备份文件，可按记录恢复。",
+    "requiresAdministrator": true,
+    "timeoutSeconds": 120,
+    "script": "$key = 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System'\n$item = Get-ItemProperty -Path $key\n@{\n  EnableLUA = $item.EnableLUA\n  ConsentPromptBehaviorAdmin = $item.ConsentPromptBehaviorAdmin\n  PromptOnSecureDesktop = $item.PromptOnSecureDesktop\n} | ConvertTo-Json | Set-Content -Path {{BackupFile}} -Encoding UTF8\nSet-ItemProperty -Path $key -Name EnableLUA -Value 1\nSet-ItemProperty -Path $key -Name ConsentPromptBehaviorAdmin -Value 5\nSet-ItemProperty -Path $key -Name PromptOnSecureDesktop -Value 1\nWrite-Output '已启用用户账户控制（UAC），需重启生效。'"
+  },
+  {
+    "actionId": "account.clear-cached-credentials",
+    "name": "清除缓存的网络凭据",
+    "risk": "High",
+    "scene": "AccountPrivilege",
+    "summary": "列出并删除凭据管理器中缓存的网络凭据，用于过期凭据导致共享访问反复失败。可能影响离线登录，请谨慎确认。",
+    "requiresRestart": false,
+    "canRollback": false,
+    "rollbackNote": "凭据删除后无法恢复，需在下次访问时重新输入。",
+    "requiresAdministrator": true,
+    "timeoutSeconds": 120,
+    "script": "$output = cmdkey /list | Out-String\nWrite-Output $output\n$targets = @()\nforeach ($line in ($output -split '(`r`n|`n)')) {\n  if ($line -match '^(目标|Target)\\s*:\\s*(.+)$') { $targets += $matches[2].Trim() }\n}\nforeach ($target in $targets) { cmdkey ('/delete:' + $target) | Out-Null }\nWrite-Output ('已删除 ' + $targets.Count + ' 条缓存的网络凭据。')\nexit 0"
+  }
+]
