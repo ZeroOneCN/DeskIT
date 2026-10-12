@@ -5,13 +5,14 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:DeskIT.App"
         mc:Ignorable="d"
-        Title="DeskIT 便携启动" Height="620" Width="980"
-        MinHeight="520" MinWidth="820"
+        Title="DeskIT 便携运维工具" Height="760" Width="1120"
+        MinHeight="600" MinWidth="960"
         WindowStartupLocation="CenterScreen"
         TextOptions.TextFormattingMode="Display">
     <Window.Resources>
         <local:SelfCheckOutcomeToBrushConverter x:Key="OutcomeBrush" />
         <local:SelfCheckOutcomeToTextConverter x:Key="OutcomeText" />
+        <local:CollectionGroupStatusToBrushConverter x:Key="GroupStatusBrush" />
 
         <Style x:Key="CardBorder" TargetType="Border">
             <Setter Property="Background" Value="White" />
@@ -27,6 +28,24 @@
             <Setter Property="Foreground" Value="#111827" />
             <Setter Property="Margin" Value="0,0,0,8" />
         </Style>
+
+        <Style x:Key="PrimaryButton" TargetType="Button">
+            <Setter Property="Height" Value="34" />
+            <Setter Property="Padding" Value="14,0" />
+            <Setter Property="MinWidth" Value="120" />
+        </Style>
+
+        <Style x:Key="FieldName" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#6B7280" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+        </Style>
+
+        <Style x:Key="FieldValue" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#111827" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+        </Style>
     </Window.Resources>
 
     <Grid Margin="18">
@@ -40,7 +59,7 @@
         <!-- 顶部：标题与常驻状态 -->
         <StackPanel Grid.Row="0">
             <TextBlock Text="DeskIT" FontSize="24" FontWeight="Bold" Foreground="#111827" />
-            <TextBlock Text="Windows 桌面 IT 运维工具（U 盘便携版）· 便携启动与运行环境"
+            <TextBlock Text="Windows 桌面 IT 运维工具（U 盘便携版）· 离线运行，数据全部写入 U 盘"
                        FontSize="12" Foreground="#6B7280" Margin="0,2,0,0" />
             <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
                 <Border Background="#EEF2FF" CornerRadius="10" Padding="10,4">
@@ -59,94 +78,210 @@
             <TextBlock x:Name="BannerText" Foreground="#B91C1C" TextWrapping="Wrap" />
         </Border>
 
-        <!-- 主体：左自检结果 / 右权限与能力 -->
-        <Grid Grid.Row="2" Margin="0,14,0,0">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="380" />
-            </Grid.ColumnDefinitions>
+        <TabControl Grid.Row="2" Margin="0,14,0,0" Padding="0,10,0,0">
+            <!-- ============ M1 便携启动 ============ -->
+            <TabItem Header="便携启动（M1）">
+                <Grid Margin="0,4,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="380" />
+                    </Grid.ColumnDefinitions>
 
-            <Border Grid.Column="0" Style="{StaticResource CardBorder}" Margin="0,0,14,0">
-                <DockPanel>
-                    <TextBlock DockPanel.Dock="Top" Style="{StaticResource CardTitle}" Text="启动自检结果" />
-                    <ScrollViewer VerticalScrollBarVisibility="Auto">
-                        <ItemsControl x:Name="SelfCheckList">
-                            <ItemsControl.ItemTemplate>
-                                <DataTemplate>
-                                    <Border BorderBrush="#F3F4F6" BorderThickness="0,0,0,1" Padding="0,9">
-                                        <Grid>
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
-                                            </Grid.ColumnDefinitions>
-                                            <StackPanel Grid.Column="0">
-                                                <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="13" />
-                                                <TextBlock Text="{Binding Detail}" Foreground="#6B7280" FontSize="12"
-                                                           TextWrapping="Wrap" Margin="0,2,10,0" />
-                                            </StackPanel>
-                                            <Border Grid.Column="1" VerticalAlignment="Top" CornerRadius="10" Padding="9,3"
-                                                    Background="{Binding Outcome, Converter={StaticResource OutcomeBrush}}">
-                                                <TextBlock FontSize="11" Foreground="White"
-                                                           Text="{Binding Outcome, Converter={StaticResource OutcomeText}}" />
+                    <Border Grid.Column="0" Style="{StaticResource CardBorder}" Margin="0,0,14,0">
+                        <DockPanel>
+                            <TextBlock DockPanel.Dock="Top" Style="{StaticResource CardTitle}" Text="启动自检结果" />
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <ItemsControl x:Name="SelfCheckList">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border BorderBrush="#F3F4F6" BorderThickness="0,0,0,1" Padding="0,9">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <StackPanel Grid.Column="0">
+                                                        <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="13" />
+                                                        <TextBlock Text="{Binding Detail}" Foreground="#6B7280" FontSize="12"
+                                                                   TextWrapping="Wrap" Margin="0,2,10,0" />
+                                                    </StackPanel>
+                                                    <Border Grid.Column="1" VerticalAlignment="Top" CornerRadius="10" Padding="9,3"
+                                                            Background="{Binding Outcome, Converter={StaticResource OutcomeBrush}}">
+                                                        <TextBlock FontSize="11" Foreground="White"
+                                                                   Text="{Binding Outcome, Converter={StaticResource OutcomeText}}" />
+                                                    </Border>
+                                                </Grid>
                                             </Border>
-                                        </Grid>
-                                    </Border>
-                                </DataTemplate>
-                            </ItemsControl.ItemTemplate>
-                        </ItemsControl>
-                    </ScrollViewer>
-                </DockPanel>
-            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </ScrollViewer>
+                        </DockPanel>
+                    </Border>
 
-            <StackPanel Grid.Column="1">
-                <Border Style="{StaticResource CardBorder}">
-                    <StackPanel>
-                        <TextBlock Style="{StaticResource CardTitle}" Text="当前权限与提权" />
-                        <TextBlock x:Name="PrivilegeHint" Foreground="#374151" FontSize="12"
-                                   TextWrapping="Wrap" Margin="0,0,0,10" />
-                        <Button x:Name="ElevateButton" Content="以管理员身份重新启动"
-                                Height="34" Click="OnElevateClick" />
-                        <Button x:Name="ReadOnlyButton" Content="继续只读诊断模式"
-                                Height="34" Margin="0,8,0,0" Click="OnReadOnlyClick" />
-                        <TextBlock Foreground="#9CA3AF" FontSize="11" TextWrapping="Wrap" Margin="0,10,0,0"
-                                   Text="提权走系统标准 UAC 流程，不尝试绕过；取消 UAC 后回到只读诊断模式，不报错、不重试。" />
+                    <StackPanel Grid.Column="1">
+                        <Border Style="{StaticResource CardBorder}">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource CardTitle}" Text="当前权限与提权" />
+                                <TextBlock x:Name="PrivilegeHint" Foreground="#374151" FontSize="12"
+                                           TextWrapping="Wrap" Margin="0,0,0,10" />
+                                <Button x:Name="ElevateButton" Content="以管理员身份重新启动"
+                                        Height="34" Click="OnElevateClick" />
+                                <Button x:Name="ReadOnlyButton" Content="继续只读诊断模式"
+                                        Height="34" Margin="0,8,0,0" Click="OnReadOnlyClick" />
+                                <TextBlock Foreground="#9CA3AF" FontSize="11" TextWrapping="Wrap" Margin="0,10,0,0"
+                                           Text="提权走系统标准 UAC 流程，不尝试绕过；取消 UAC 后回到只读诊断模式，不报错、不重试。" />
 
-                        <Separator Margin="0,12,0,10" />
-                        <TextBlock Style="{StaticResource CardTitle}" Text="高级模式（介质级记住）" />
-                        <TextBlock x:Name="AdvancedHint" Foreground="#374151" FontSize="12"
-                                   TextWrapping="Wrap" Margin="0,0,0,8" />
-                        <Button x:Name="AdvancedButton" Content="开启高级模式"
-                                Height="32" Click="OnToggleAdvancedClick" />
-                        <TextBlock Foreground="#9CA3AF" FontSize="11" TextWrapping="Wrap" Margin="0,8,0,0"
-                                   Text="高级模式用于启用受控自定义命令（M9）；需管理员模式 + 主密码验证 + 二次确认，可随时关闭（关闭不需密码）。" />
+                                <Separator Margin="0,12,0,10" />
+                                <TextBlock Style="{StaticResource CardTitle}" Text="高级模式（介质级记住）" />
+                                <TextBlock x:Name="AdvancedHint" Foreground="#374151" FontSize="12"
+                                           TextWrapping="Wrap" Margin="0,0,0,8" />
+                                <Button x:Name="AdvancedButton" Content="开启高级模式"
+                                        Height="32" Click="OnToggleAdvancedClick" />
+                                <TextBlock Foreground="#9CA3AF" FontSize="11" TextWrapping="Wrap" Margin="0,8,0,0"
+                                           Text="高级模式用于启用受控自定义命令（M9）；需管理员模式 + 主密码验证 + 二次确认，可随时关闭（关闭不需密码）。" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource CardBorder}" Margin="0,12,0,0">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource CardTitle}" Text="本次可做什么（能力摘要）" />
+                                <ItemsControl x:Name="CapabilityList">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding}" FontSize="12" Foreground="#374151"
+                                                       TextWrapping="Wrap" Margin="0,2" />
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <TextBlock x:Name="RestrictionTitle" Foreground="#B45309" FontWeight="SemiBold"
+                                           FontSize="12" Margin="0,10,0,4" Visibility="Collapsed" Text="受限原因" />
+                                <ItemsControl x:Name="RestrictionList">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding}" FontSize="12" Foreground="#B45309"
+                                                       TextWrapping="Wrap" Margin="0,2" />
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </StackPanel>
+                        </Border>
                     </StackPanel>
-                </Border>
+                </Grid>
+            </TabItem>
 
-                <Border Style="{StaticResource CardBorder}" Margin="0,12,0,0">
-                    <StackPanel>
-                        <TextBlock Style="{StaticResource CardTitle}" Text="本次可做什么（能力摘要）" />
-                        <ItemsControl x:Name="CapabilityList">
-                            <ItemsControl.ItemTemplate>
-                                <DataTemplate>
-                                    <TextBlock Text="{Binding}" FontSize="12" Foreground="#374151"
-                                               TextWrapping="Wrap" Margin="0,2" />
-                                </DataTemplate>
-                            </ItemsControl.ItemTemplate>
-                        </ItemsControl>
-                        <TextBlock x:Name="RestrictionTitle" Foreground="#B45309" FontWeight="SemiBold"
-                                   FontSize="12" Margin="0,10,0,4" Visibility="Collapsed" Text="受限原因" />
-                        <ItemsControl x:Name="RestrictionList">
-                            <ItemsControl.ItemTemplate>
-                                <DataTemplate>
-                                    <TextBlock Text="{Binding}" FontSize="12" Foreground="#B45309"
-                                               TextWrapping="Wrap" Margin="0,2" />
-                                </DataTemplate>
-                            </ItemsControl.ItemTemplate>
-                        </ItemsControl>
-                    </StackPanel>
-                </Border>
-            </StackPanel>
-        </Grid>
+            <!-- ============ M2 设备识别与信息采集 ============ -->
+            <TabItem Header="设备信息采集（M2）">
+                <Grid Margin="0,4,0,0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <!-- 触发与采集范围 -->
+                    <Border Grid.Row="0" Style="{StaticResource CardBorder}">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource CardTitle}" Text="采集触发与范围（只读采集，不向目标机磁盘写入任何产物）" />
+                            <StackPanel Orientation="Horizontal">
+                                <Button x:Name="CollectBasicButton" Style="{StaticResource PrimaryButton}"
+                                        Content="开始基础采集（≤60 秒）" Click="OnCollectBasicClick" />
+                                <Button x:Name="CollectFullButton" Style="{StaticResource PrimaryButton}" Margin="8,0,0,0"
+                                        Content="开始完整采集（含软件清单）" Click="OnCollectFullClick" />
+                                <Button x:Name="CancelCollectButton" Height="34" Padding="14,0" Margin="8,0,0,0"
+                                        Content="中止采集" IsEnabled="False" Click="OnCancelCollectClick" />
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                                <TextBlock Text="采集范围（取消勾选即单项关闭）：" FontSize="12"
+                                           Foreground="#6B7280" VerticalAlignment="Center" />
+                                <CheckBox x:Name="IncludeAccountCheck" Content="账号与环境" IsChecked="True"
+                                          Margin="10,0,0,0" VerticalAlignment="Center" />
+                                <CheckBox x:Name="IncludeSoftwareCheck" Content="已装软件" IsChecked="True"
+                                          Margin="10,0,0,0" VerticalAlignment="Center" />
+                                <CheckBox x:Name="IncludeSecurityCheck" Content="安全与更新" IsChecked="True"
+                                          Margin="10,0,0,0" VerticalAlignment="Center" />
+                                <TextBlock Text="系统、硬件、存储、网络为必采项。" FontSize="11"
+                                           Foreground="#9CA3AF" Margin="14,0,0,0" VerticalAlignment="Center" />
+                            </StackPanel>
+                            <ProgressBar x:Name="CollectProgressBar" Height="6" Margin="0,12,0,6"
+                                         Minimum="0" Maximum="100" Value="0" />
+                            <TextBlock x:Name="CollectionProgressText" FontSize="12" Foreground="#6B7280"
+                                       TextWrapping="Wrap" Text="尚未采集。基础采集默认 ≤60 秒，单项超时不阻塞其他项。" />
+                        </StackPanel>
+                    </Border>
+
+                    <!-- 机器标识与档案 -->
+                    <Border x:Name="MachineCard" Grid.Row="1" Style="{StaticResource CardBorder}"
+                            Margin="0,12,0,0" Visibility="Collapsed">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource CardTitle}" Text="目标机档案" />
+                            <TextBlock x:Name="MachineIdentityText" FontSize="14" FontWeight="SemiBold"
+                                       Foreground="#111827" TextWrapping="Wrap" />
+                            <TextBlock x:Name="MachineProfileText" FontSize="12" Foreground="#B45309"
+                                       TextWrapping="Wrap" Margin="0,4,0,0" />
+                            <TextBlock x:Name="MachineSnapshotText" FontSize="12" Foreground="#6B7280"
+                                       TextWrapping="Wrap" Margin="0,4,0,0" />
+                        </StackPanel>
+                    </Border>
+
+                    <!-- 分组摘要卡片 -->
+                    <Border Grid.Row="2" Style="{StaticResource CardBorder}" Margin="0,12,0,0">
+                        <DockPanel>
+                            <TextBlock DockPanel.Dock="Top" Style="{StaticResource CardTitle}" Text="采集结果（按分组）" />
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <ItemsControl x:Name="CollectionGroupList">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Expander Margin="0,0,0,6" IsExpanded="True"
+                                                      BorderBrush="#E5E7EB" BorderThickness="1" Padding="8">
+                                                <Expander.Header>
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <TextBlock Text="{Binding GroupName}" FontWeight="SemiBold" FontSize="13"
+                                                                   VerticalAlignment="Center" />
+                                                        <Border Background="{Binding Status, Converter={StaticResource GroupStatusBrush}}"
+                                                                CornerRadius="10" Padding="8,2" Margin="10,0,0,0">
+                                                            <TextBlock Text="{Binding StatusText}" FontSize="11" Foreground="White" />
+                                                        </Border>
+                                                        <TextBlock Text="{Binding ElapsedText}" FontSize="11"
+                                                                   Foreground="#9CA3AF" Margin="10,0,0,0" VerticalAlignment="Center" />
+                                                    </StackPanel>
+                                                </Expander.Header>
+                                                <StackPanel Margin="6,8,0,4">
+                                                    <ItemsControl ItemsSource="{Binding Fields}">
+                                                        <ItemsControl.ItemTemplate>
+                                                            <DataTemplate>
+                                                                <Grid Margin="0,2">
+                                                                    <Grid.ColumnDefinitions>
+                                                                        <ColumnDefinition Width="150" />
+                                                                        <ColumnDefinition Width="*" />
+                                                                    </Grid.ColumnDefinitions>
+                                                                    <TextBlock Grid.Column="0" Style="{StaticResource FieldName}"
+                                                                               Text="{Binding Name}" Margin="0,0,10,0" />
+                                                                    <TextBlock Grid.Column="1" Style="{StaticResource FieldValue}"
+                                                                               Text="{Binding Display}" />
+                                                                </Grid>
+                                                            </DataTemplate>
+                                                        </ItemsControl.ItemTemplate>
+                                                    </ItemsControl>
+                                                    <ItemsControl ItemsSource="{Binding Details}" Margin="0,6,0,0">
+                                                        <ItemsControl.ItemTemplate>
+                                                            <DataTemplate>
+                                                                <TextBlock Text="{Binding}" FontFamily="Consolas" FontSize="11"
+                                                                           Foreground="#374151" TextWrapping="Wrap" Margin="0,1" />
+                                                            </DataTemplate>
+                                                        </ItemsControl.ItemTemplate>
+                                                    </ItemsControl>
+                                                </StackPanel>
+                                            </Expander>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </ScrollViewer>
+                        </DockPanel>
+                    </Border>
+                </Grid>
+            </TabItem>
+        </TabControl>
 
         <TextBlock x:Name="FooterStatus" Grid.Row="3" Margin="0,12,0,0"
                    Foreground="#6B7280" FontSize="12" TextWrapping="Wrap"

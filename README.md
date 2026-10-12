@@ -8,6 +8,7 @@ DeskIT 是一款**免安装、单目录便携**的 Windows 桌面 IT 运维工�
 - 脚本引擎：**Windows PowerShell 5.1**（系统内置，不依赖 PowerShell 7+）
 - 仅支持 **Windows 10 1809+ / Windows 11（x64）**
 - 离线运行：代码中不得存在任何出网调用
+- 设备信息采集依赖 `System.Management` 8.0.0（Microsoft 官方包，随程序一并部署，目标机无需额外安装）
 
 ## 目录结构
 
@@ -30,8 +31,8 @@ DeskIT/
    └─ DeskIT.Core.Tests/  Core 规则的 xUnit 单元测试
 ```
 
-- **DeskIT.Core**：风险级别、动作结果、诊断结论四态、会话状态机等枚举，目标机与处理记录骨架，以及“按风险排序且需重启动作排最后”“成功但需重启 ⇒ 倾向待重启生效”等可测试的纯函数规则。
-- **DeskIT.Windows**：PowerShell 5.1 执行器接口、介质可写性探测接口等 Windows 能力封装的接口与占位实现。
+- **DeskIT.Core**：风险级别、动作结果、诊断结论四态、会话状态机等枚举；采集分组/快照/档案模型；以及“启动自检阈值与能力推导”“机器标识回退与档案归并”“快照保留上限”“按风险排序且需重启动作排最后”等可测试的纯函数规则。
+- **DeskIT.Windows**：启动自检能力（权限、提权、单实例、完整性、目录读写、卷空间、系统版本）、设备信息只读采集（WMI / 注册表 / 网络接口 / 卷信息）、档案与快照存储；PowerShell 5.1 执行器仍为接口占位，将在 M3/M4 落地。
 - **DeskIT.App**：最小可运行外壳，引用 Core 与 Windows。
 
 ## 构建 / 测试 / 发布
@@ -62,11 +63,19 @@ powershell -ExecutionPolicy Bypass -File tools\Generate-Manifest.ps1 -PublishDir
 |------|------|------|
 | 1 | 工程骨架（.NET 8 + WPF + xUnit） | 已完成 |
 | 2 | M1 便携启动与运行环境 | 已完成 |
+| 3 | M2 设备识别与信息采集 | 已完成 |
 
 **M1（步骤 2）**：启动页呈现三块内容——启动自检结果（程序完整性、数据目录可写、介质可用空间、目标系统版本、当前权限、并发实例）、当前权限与提权入口（管理员提权 / 只读回退）、本次能力摘要；并实现高级模式的介质级开关（随 `data/operators.json` 保存，开启需二次确认）。
 - 判定规则集中在 [StartupRules.cs](src/DeskIT.Core/StartupRules.cs)（纯逻辑、可单测）：空间 200 MB / 500 MB 阈值、系统版本支持范围、完整性结论、能力推导。
 - Windows 能力封装见 [src/DeskIT.Windows](src/DeskIT.Windows)：权限检测、提权启动、单实例守卫、完整性校验、目录读写探测、卷空间、系统版本（`RtlGetVersion`）。
 - 高级模式开关的主密码验证将在介质加密（M8）落地后接入。
+
+**M2（步骤 3）**：设备信息采集页提供“基础采集（≤60 秒，不含软件全量清单）”与“完整采集（含已装软件清单）”两个入口，并按分组展示摘要卡片；采集全程只读，结果写入 U 盘 `data/snapshots/`，不向目标机磁盘写入任何产物。
+- 采集分 7 组：系统、硬件、存储、网络、账号与环境、已装软件、安全与更新；其中账号与环境、已装软件、安全与更新可单项关闭（界面取消勾选）。
+- 分组并行、组内采集项串行，**每项独立超时（默认 15 秒）**：超时记为“未知（超时）”、权限不足记为“无权限读取”、对象不存在记为“不适用”，均不阻塞其他项。
+- 机器标识优先取硬件序列号（`Win32_BIOS.SerialNumber`），自动剔除 `Default string`、`To be filled by O.E.M.` 等占位串；不可用时回退为“主机名 + 首次采集时间”，并在档案中标注标识来源。
+- 同一机器多次采集归并到同一档案（提示“该机器此前处理过 N 次”），档案内仅保留最新 5 份快照，历史快照可对比。
+- 纯规则见 [CollectionRules.cs](src/DeskIT.Core/CollectionRules.cs) 与 [MachineIdentityRules.cs](src/DeskIT.Core/MachineIdentityRules.cs)；采集实现见 [DeviceInfoCollector.cs](src/DeskIT.Windows/DeviceInfoCollector.cs) 与 [WindowsCollectionItems.cs](src/DeskIT.Windows/WindowsCollectionItems.cs)；落盘见 [SnapshotStore.cs](src/DeskIT.Windows/SnapshotStore.cs)。
 
 ## 关于需求文档
 

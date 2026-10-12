@@ -1,4 +1,8 @@
-﻿using System.IO;
+﻿using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using DeskIT.Core;
 using DeskIT.Windows;
@@ -19,6 +23,10 @@ public partial class MainWindow : Window
 
     private readonly string _programDirectory;
     private readonly string _dataDirectory;
+
+    private readonly IDeviceCollectionService _collectionService = new DeviceCollectionService();
+    private CancellationTokenSource? _collectionCancellation;
+    private bool _collecting;
 
     private PrivilegeLevel _privilege;
     private bool _advancedModeEnabled;
@@ -65,6 +73,7 @@ public partial class MainWindow : Window
     private void OnClosed(object? sender, EventArgs e)
     {
         _guard.ActivationRequested -= OnActivationRequested;
+        _collectionCancellation?.Cancel();
     }
 
     /// <summary>收到其他实例的激活请求：恢复并前置窗口，并提示已存在的实例。</summary>
@@ -173,6 +182,17 @@ public partial class MainWindow : Window
         RestrictionList.ItemsSource = capabilities.Restrictions;
         RestrictionTitle.Visibility = capabilities.Restrictions.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
 
+        // 设备信息采集入口（M2）：任何模式均可采集；仅当“不再开始新会话”（空间 <200 MB）或启动被阻止时禁用。
+        var canCollect = verdict.CanStart && capabilities.CanCollect && capabilities.CanStartNewSession;
+        CollectBasicButton.IsEnabled = canCollect;
+        CollectFullButton.IsEnabled = canCollect;
+        if (!canCollect)
+        {
+            CollectionProgressText.Text = verdict.CanStart
+                ? "介质可用空间低于 200 MB：已停止开始新的采集会话，请先归档或更换介质。"
+                : "启动自检未通过，暂不能采集设备信息。";
+        }
+
         // 高级模式开关
         AdvancedButton.IsEnabled = verdict.IsAdministrator && verdict.CanStart;
         AdvancedButton.Content = _advancedModeEnabled ? "关闭高级模式" : "开启高级模式";
@@ -212,6 +232,8 @@ public partial class MainWindow : Window
             ElevateButton.IsEnabled = false;
             ReadOnlyButton.IsEnabled = false;
             AdvancedButton.IsEnabled = false;
+            CollectBasicButton.IsEnabled = false;
+            CollectFullButton.IsEnabled = false;
         }
     }
 
@@ -291,5 +313,197 @@ public partial class MainWindow : Window
 
         _mediaStateStore.SetAdvancedModeEnabled(_dataDirectory, true);
         await RunSelfCheckAsync();
+    }
+
+    /// <summary>点击“开始基础采集”：以启动时自动触发的默认范围采集（≤60 秒，不含已装软件全量清单）。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private async void OnCollectBasicClick(object sender, RoutedEventArgs e)
+        => await RunCollectionAsync(CollectionMode.Basic);
+
+    /// <summary>点击“开始完整采集”：在勾选范围内采集，含已装软件全量清单（耗时更长）。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private async void OnCollectFullClick(object sender, RoutedEventArgs e)
+        => await RunCollectionAsync(CollectionMode.Full);
+
+    /// <summary>点击“中止采集”：终止本次采集；为保证快照完整，本次结果不写入 U 盘。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private void OnCancelCollectClick(object sender, RoutedEventArgs e)
+    {
+        _collectionCancellation?.Cancel();
+        CollectionProgressText.Text = "正在中止采集…";
+    }
+
+    /// <summary>
+    /// 执行一次设备信息采集并入库。
+    /// </summary>
+    /// <param name="mode">采集模式。</param>
+    /// <returns>无返回值的异步任务。</returns>
+    private async Task RunCollectionAsync(CollectionMode mode)
+    {
+        if (_collecting)
+        {
+            return;
+        }
+
+        if (_verdict is null || !_verdict.CanStart)
+        {
+            MessageBox.Show(this, "启动自检未通过，暂不能采集设备信息。", "DeskIT", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        if (!_verdict.Capabilities.CanStartNewSession)
+        {
+            MessageBox.Show(
+                this,
+                "介质可用空间低于 200 MB，已停止开始新的采集会话。请先归档报告与台账，或更换介质。",
+                "DeskIT",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
+        _collecting = true;
+        SetCollectingBusy(true);
+        CollectionGroupList.ItemsSource = null;
+        CollectProgressBar.Value = 0;
+        CollectionProgressText.Text = $"正在执行{CollectionRules.DescribeMode(mode)}…";
+        MachineCard.Visibility = Visibility.Collapsed;
+
+        var request = new CollectionRequest(
+            mode,
+            _privilege,
+            BuildDisabledGroups(),
+            CollectionRules.DefaultItemTimeout);
+        var progress = new Progress<CollectionProgress>(OnCollectionProgress);
+
+        _collectionCancellation = new CancellationTokenSource();
+
+        try
+        {
+            var outcome = await _collectionService.CollectAndStoreAsync(
+                _dataDirectory,
+                request,
+                progress,
+                _collectionCancellation.Token);
+
+            RenderCollection(outcome);
+        }
+        catch (OperationCanceledException)
+        {
+            CollectionProgressText.Text = "已中止采集，本次结果未写入快照。";
+        }
+        catch (Exception ex)
+        {
+            CollectionProgressText.Text = "采集失败，未能写入快照。";
+            MessageBox.Show(this, $"设备信息采集失败：{ex.Message}", "DeskIT", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            _collecting = false;
+            _collectionCancellation?.Dispose();
+            _collectionCancellation = null;
+            SetCollectingBusy(false);
+        }
+    }
+
+    /// <summary>汇总界面上被取消勾选的可选分组（取消勾选即单项关闭）。</summary>
+    /// <returns>被关闭的分组集合。</returns>
+    private IReadOnlySet<CollectionGroup> BuildDisabledGroups()
+    {
+        var disabled = new HashSet<CollectionGroup>();
+        if (IncludeAccountCheck.IsChecked != true)
+        {
+            disabled.Add(CollectionGroup.AccountEnvironment);
+        }
+
+        if (IncludeSoftwareCheck.IsChecked != true)
+        {
+            disabled.Add(CollectionGroup.InstalledSoftware);
+        }
+
+        if (IncludeSecurityCheck.IsChecked != true)
+        {
+            disabled.Add(CollectionGroup.SecurityUpdate);
+        }
+
+        return disabled;
+    }
+
+    /// <summary>上报采集进度（以采集项为单位）。</summary>
+    /// <param name="progress">进度信息。</param>
+    private void OnCollectionProgress(CollectionProgress progress)
+    {
+        CollectionProgressText.Text =
+            $"采集中：{CollectionRules.DescribeGroup(progress.Group)} · {progress.ItemName}（{progress.CompletedItems}/{progress.TotalItems}）";
+        CollectProgressBar.Value = progress.TotalItems == 0
+            ? 0
+            : progress.CompletedItems * 100.0 / progress.TotalItems;
+    }
+
+    /// <summary>
+    /// 渲染采集结果：机器标识与档案提示，以及各分组摘要卡片（未采集的可选分组显示“已跳过”）。
+    /// </summary>
+    /// <param name="outcome">采集与归并结果。</param>
+    private void RenderCollection(DeviceCollectionOutcome outcome)
+    {
+        var snapshot = outcome.Snapshot;
+
+        MachineCard.Visibility = Visibility.Visible;
+        MachineIdentityText.Text = $"机器标识：{snapshot.MachineId}（来源：{MachineIdSourceText.Describe(snapshot.MachineIdSource)}）";
+        MachineProfileText.Text = outcome.Profile.Notice;
+        MachineSnapshotText.Text =
+            $"快照：{snapshot.SnapshotId} · {CollectionRules.DescribeMode(snapshot.Mode)} · " +
+            $"{snapshot.CollectedAt:yyyy-MM-dd HH:mm:ss} · 计算机名 {snapshot.HostName} · 该档案累计 {outcome.Profile.Profile.ProcessingCount} 次采集";
+
+        var views = new List<CollectionGroupView>();
+        foreach (var group in CollectionRules.AllGroups)
+        {
+            var result = snapshot.Groups.FirstOrDefault(g => g.Group == group);
+            if (result is null)
+            {
+                views.Add(new CollectionGroupView(
+                    CollectionRules.DescribeGroup(group),
+                    CollectionGroupStatus.Skipped,
+                    CollectionRules.DescribeGroupStatus(CollectionGroupStatus.Skipped),
+                    string.Empty,
+                    Array.Empty<CollectionFieldView>(),
+                    Array.Empty<string>()));
+                continue;
+            }
+
+            views.Add(new CollectionGroupView(
+                CollectionRules.DescribeGroup(group),
+                result.Status,
+                CollectionRules.DescribeGroupStatus(result.Status),
+                $"耗时 {result.Elapsed.TotalSeconds:0.0} 秒",
+                result.Fields
+                    .Select(field => new CollectionFieldView(field.Name, CollectionRules.DescribeField(field)))
+                    .ToList(),
+                result.Details));
+        }
+
+        CollectionGroupList.ItemsSource = views;
+
+        var incomplete = snapshot.Groups.Sum(group => group.Fields.Count(
+            field => field.Status is FieldStatus.NoPermission or FieldStatus.Timeout or FieldStatus.Failed));
+        CollectionProgressText.Text = incomplete == 0
+            ? $"采集完成：{CollectionRules.DescribeMode(snapshot.Mode)}，{snapshot.Groups.Count} 个分组全部字段读取正常。"
+            : $"采集完成：{CollectionRules.DescribeMode(snapshot.Mode)}，{snapshot.Groups.Count} 个分组，其中 {incomplete} 项未能完整读取（详见各分组状态）。";
+        CollectProgressBar.Value = 100;
+    }
+
+    /// <summary>切换采集忙碌态（采集期间禁用触发与范围勾选，启用中止按钮）。</summary>
+    /// <param name="busy">是否正在采集。</param>
+    private void SetCollectingBusy(bool busy)
+    {
+        CollectBasicButton.IsEnabled = !busy;
+        CollectFullButton.IsEnabled = !busy;
+        CancelCollectButton.IsEnabled = busy;
+        IncludeAccountCheck.IsEnabled = !busy;
+        IncludeSoftwareCheck.IsEnabled = !busy;
+        IncludeSecurityCheck.IsEnabled = !busy;
     }
 }
