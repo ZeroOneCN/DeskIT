@@ -342,3 +342,37 @@ public sealed class ActionOutcomeToBrushConverter : IValueConverter
     public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
         => throw new NotSupportedException();
 }
+
+/// <summary>把会话结论转换为徽标背景色。</summary>
+public sealed class LedgerConclusionToBrushConverter : IValueConverter
+{
+    private static readonly SolidColorBrush ResolvedBrush = new(Color.FromRgb(0x16, 0xA3, 0x4A));
+    private static readonly SolidColorBrush PendingRestartBrush = new(Color.FromRgb(0x7C, 0x3A, 0xED));
+    private static readonly SolidColorBrush UnresolvedBrush = new(Color.FromRgb(0xDC, 0x26, 0x26));
+    private static readonly SolidColorBrush InterruptedBrush = new(Color.FromRgb(0x6B, 0x72, 0x80));
+
+    /// <summary>按会话结论返回背景色：已解决=绿、待重启=紫、未解决=红、已中断=深灰。</summary>
+    /// <param name="value">SessionConclusion 值。</param>
+    /// <param name="targetType">目标类型。</param>
+    /// <param name="parameter">未使用。</param>
+    /// <param name="culture">区域信息。</param>
+    /// <returns>对应的画刷。</returns>
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        => value switch
+        {
+            SessionConclusion.Resolved => ResolvedBrush,
+            SessionConclusion.PendingRestart => PendingRestartBrush,
+            SessionConclusion.Unresolved => UnresolvedBrush,
+            SessionConclusion.Interrupted => InterruptedBrush,
+            _ => InterruptedBrush
+        };
+
+    /// <summary>不支持反向转换。</summary>
+    /// <param name="value">值。</param>
+    /// <param name="targetType">目标类型。</param>
+    /// <param name="parameter">参数。</param>
+    /// <param name="culture">区域信息。</param>
+    /// <returns>不返回。</returns>
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}

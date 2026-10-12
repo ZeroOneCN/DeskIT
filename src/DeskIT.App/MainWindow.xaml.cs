@@ -68,6 +68,24 @@ public partial class MainWindow : Window
     private StartupVerdict? _verdict;
     private bool _activationNoticeShown;
 
+    // ═══════════════════ M7 记录与多机台账 ═══════════════════
+    private readonly ILedgerStore _ledgerStore = new LedgerStore();
+    private readonly IReportWriter _reportWriter = new ReportWriter();
+    private readonly ISnapshotStore _snapshotStore = new SnapshotStore();
+
+    private OperatorInfo? _currentOperator;
+    private string _ledgerSessionId = string.Empty;
+    private DateTimeOffset? _ledgerSessionStartedAt;
+    private IReadOnlyList<DiagnosisSceneResult> _ledgerScenes = Array.Empty<DiagnosisSceneResult>();
+    private readonly List<ActionExecutionResult> _rawActionResults = new();
+    private bool _ledgerSessionActive;
+
+    private IReadOnlyList<HandlingRecord> _ledgerRecords = Array.Empty<HandlingRecord>();
+    private IReadOnlyList<HandlingRecord> _ledgerFilteredRecords = Array.Empty<HandlingRecord>();
+    private IReadOnlySet<string> _ledgerConflictRecordIds = new HashSet<string>(StringComparer.Ordinal);
+    private bool _ledgerLoaded;
+    private bool _ledgerBusy;
+
     /// <summary>
     /// 初始化主窗口。
     /// </summary>
@@ -91,6 +109,18 @@ public partial class MainWindow : Window
 
         ActionResultList.ItemsSource = _actionResults;
         PackageResultList.ItemsSource = _packageResults;
+
+        // M7：结论 / 类别 / 未解决原因 / 导出选项为静态清单，构造时即填充，避免进入页签时闪空。
+        LedgerCategoryCombo.ItemsSource = LedgerViewFactory.BuildCategoryOptions();
+        LedgerCategoryCombo.SelectedIndex = 0;
+        LedgerUnresolvedReasonCombo.ItemsSource = LedgerViewFactory.BuildUnresolvedReasonOptions();
+        LedgerUnresolvedReasonCombo.SelectedIndex = 0;
+        LedgerFilterCategoryCombo.ItemsSource = LedgerViewFactory.BuildCategoryFilterOptions();
+        LedgerFilterCategoryCombo.SelectedIndex = 0;
+        LedgerExportScopeCombo.ItemsSource = LedgerViewFactory.BuildExportScopeOptions();
+        LedgerExportScopeCombo.SelectedIndex = 0;
+        LedgerExportFormatCombo.ItemsSource = LedgerViewFactory.BuildExportFormatOptions();
+        LedgerExportFormatCombo.SelectedIndex = 0;
 
         _guard.ActivationRequested += OnActivationRequested;
         Loaded += OnLoaded;
@@ -567,6 +597,9 @@ public partial class MainWindow : Window
             ? $"采集完成：{CollectionRules.DescribeMode(snapshot.Mode)}，{snapshot.Groups.Count} 个分组全部字段读取正常。"
             : $"采集完成：{CollectionRules.DescribeMode(snapshot.Mode)}，{snapshot.Groups.Count} 个分组，其中 {incomplete} 项未能完整读取（详见各分组状态）。";
         CollectProgressBar.Value = 100;
+
+        // M7：采集即建立/更新本次处理会话上下文（机器标识用于台账归并与档案匹配）。
+        EstablishSessionFromCollection(snapshot);
     }
 
     /// <summary>切换采集忙碌态（采集期间禁用触发与范围勾选，启用中止按钮）。</summary>
@@ -746,6 +779,9 @@ public partial class MainWindow : Window
         DiagnosisProgressText.Text =
             $"诊断完成：{report.Scenes.Count} 个场景、{summary.TotalCount} 个诊断项，耗时 {report.FinishedAt - report.StartedAt:hh\\:mm\\:ss}。";
         DiagnoseProgressBar.Value = 100;
+
+        // M7：把诊断会话标识与结论写入本次处理会话上下文，作为台账记录来源。
+        EstablishSessionFromDiagnosis(outcome);
     }
 
     /// <summary>把诊断结论转换为界面视图。</summary>
@@ -1156,6 +1192,7 @@ public partial class MainWindow : Window
                     token);
 
                 _actionResults.Add(BuildActionResultView(result));
+                _rawActionResults.Add(result);
                 completed++;
 
                 if (result.Outcome == ActionOutcome.Cancelled)
@@ -1241,6 +1278,11 @@ public partial class MainWindow : Window
         if (MainTabs.SelectedIndex == 4)
         {
             EnsurePackagesLoaded();
+        }
+        else if (MainTabs.SelectedIndex == 6)
+        {
+            // M7：首次进入“记录与台账”页时按需加载台账，避免拖慢启动。
+            EnsureLedgerLoaded();
         }
     }
 
@@ -1798,5 +1840,798 @@ public partial class MainWindow : Window
     {
         QueryAccountsButton.IsEnabled = !busy && _verdict is not null && _verdict.CanStart;
         CancelAccountQueryButton.IsEnabled = busy;
+    }
+
+    // ═══════════════════ M7 记录与多机台账 ═══════════════════
+
+    /// <summary>
+    /// 采集完成时建立/更新本次处理会话上下文（机器标识由档案归并确定）。
+    /// </summary>
+    /// <param name="snapshot">本次采集生成的快照。</param>
+    private void EstablishSessionFromCollection(MachineSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        BeginSessionIfNeeded();
+        RefreshLedgerSessionUi();
+    }
+
+    /// <summary>
+    /// 诊断完成时把诊断会话标识、结论写入本次处理会话上下文，作为台账记录来源。
+    /// </summary>
+    /// <param name="outcome">诊断与入库结果。</param>
+    private void EstablishSessionFromDiagnosis(ProblemDiagnosisOutcome outcome)
+    {
+        BeginSessionIfNeeded();
+
+        // 诊断会话标识优先作为记录会话标识（记录需可回溯到 M3 会话）。
+        if (!string.IsNullOrWhiteSpace(outcome.Session.SessionId))
+        {
+            _ledgerSessionId = outcome.Session.SessionId;
+        }
+
+        _ledgerScenes = outcome.Report.Scenes;
+        RefreshLedgerSessionUi();
+    }
+
+    /// <summary>
+    /// 若本次尚无活动会话则新建一个：生成会话标识与开始时间，并清空上一会话的动作缓存。
+    /// </summary>
+    private void BeginSessionIfNeeded()
+    {
+        if (_ledgerSessionActive)
+        {
+            return;
+        }
+
+        var startedAt = DateTimeOffset.Now;
+        _ledgerSessionStartedAt = startedAt;
+        _ledgerSessionId = DiagnosisRules.NewSessionId(startedAt);
+        _ledgerScenes = Array.Empty<DiagnosisSceneResult>();
+        _rawActionResults.Clear();
+        _ledgerSessionActive = true;
+    }
+
+    /// <summary>
+    /// 刷新“本次会话”页的会话提示与表单可用性，并同步处理人字段与历史提示。
+    /// </summary>
+    private void RefreshLedgerSessionUi()
+    {
+        var (machineId, source, hostName) = ResolveCurrentMachine();
+
+        if (_ledgerSessionActive && !string.IsNullOrWhiteSpace(machineId))
+        {
+            LedgerFormPanel.IsEnabled = true;
+            FinishLedgerButton.IsEnabled = true;
+            var started = _ledgerSessionStartedAt ?? DateTimeOffset.Now;
+            LedgerSessionInfoText.Text =
+                $"会话 {_ledgerSessionId} · 机器 {hostName}（{machineId}，来源：{MachineIdSourceText.Describe(source)}）· "
+                + $"权限：{(_privilege == PrivilegeLevel.Administrator ? "管理员" : "只读（标准用户）")} · 开始于 {started:yyyy-MM-dd HH:mm:ss}";
+            LedgerFinishStatusText.Text = "确认结论与问题类别后点击“完成会话并产出报告”，记录将写入台账。";
+        }
+        else if (_ledgerSessionActive)
+        {
+            LedgerFormPanel.IsEnabled = false;
+            FinishLedgerButton.IsEnabled = false;
+            LedgerSessionInfoText.Text = "本次处理尚未建立机器标识：请先在“设备信息采集（M2）”完成一次采集，再回到本页完成会话。";
+        }
+        else
+        {
+            LedgerFormPanel.IsEnabled = false;
+            FinishLedgerButton.IsEnabled = false;
+            LedgerSessionInfoText.Text = "尚未建立会话：请先在“设备信息采集（M2）”“问题诊断（M3）”中开始一次处理。";
+        }
+
+        RefreshOperatorFields();
+        RefreshCurrentMachineHistory();
+    }
+
+    /// <summary>
+    /// 从介质读取当前登记处理人并预填表单（仅在对应输入框为空时填充，避免打断现场输入）。
+    /// </summary>
+    private void RefreshOperatorFields()
+    {
+        _currentOperator = _mediaStateStore.GetCurrentOperator(_dataDirectory);
+
+        if (_currentOperator is null)
+        {
+            LedgerOperatorHintText.Text = "介质尚未登记处理人：请填写工号与姓名，并点击“登记为介质处理人”。";
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(LedgerOperatorIdBox.Text))
+        {
+            LedgerOperatorIdBox.Text = _currentOperator.EmployeeId;
+        }
+
+        if (string.IsNullOrWhiteSpace(LedgerOperatorNameBox.Text))
+        {
+            LedgerOperatorNameBox.Text = _currentOperator.Name;
+        }
+
+        LedgerOperatorHintText.Text = $"介质当前登记处理人：{_currentOperator.DisplayText}。修改后点击“登记为介质处理人”可更新介质登记。";
+    }
+
+    /// <summary>
+    /// 解析当前处理机器的标识、来源与计算机名（按计算机名匹配既有档案；无档案时返回空标识）。
+    /// </summary>
+    /// <returns>机器标识、标识来源与计算机名。</returns>
+    private (string Id, MachineIdSource Source, string HostName) ResolveCurrentMachine()
+    {
+        var hostName = Environment.MachineName;
+        try
+        {
+            var profile = _snapshotStore.LoadAllProfiles(_dataDirectory)
+                .FirstOrDefault(p => string.Equals(p.HostName, hostName, StringComparison.OrdinalIgnoreCase));
+            if (profile is not null)
+            {
+                return (profile.MachineId, profile.MachineIdSource, profile.HostName);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // 读取档案失败时按“尚未建立机器标识”处理，不阻断界面。
+        }
+
+        return (string.Empty, MachineIdSource.Fallback, hostName);
+    }
+
+    /// <summary>
+    /// 刷新“目标机档案”页：展示当前处理机器的历史记录（按处理时间倒序）与历史提示。
+    /// </summary>
+    private void RefreshCurrentMachineHistory()
+    {
+        var (machineId, _, hostName) = ResolveCurrentMachine();
+        if (string.IsNullOrWhiteSpace(machineId))
+        {
+            MachineRecordList.ItemsSource = null;
+            MachineHistoryNoticeText.Text = "尚未建立机器标识：请先完成一次设备信息采集。";
+            LedgerHistoryNoticeText.Visibility = Visibility.Collapsed;
+            ViewLastHandledButton.IsEnabled = false;
+            UpdateLedgerReuseHint();
+            return;
+        }
+
+        var records = _ledgerRecords
+            .Where(record => string.Equals(record.MachineId, machineId, StringComparison.Ordinal))
+            .OrderByDescending(record => record.FinishedAt)
+            .ToList();
+
+        MachineRecordList.ItemsSource = records
+            .Select(record => new LedgerRecordView(record, _ledgerConflictRecordIds.Contains(record.RecordId)))
+            .ToList();
+
+        if (records.Count == 0)
+        {
+            MachineHistoryNoticeText.Text = $"机器 {hostName}（{machineId}）在本 U 盘尚无历史处理记录。";
+            LedgerHistoryNoticeText.Visibility = Visibility.Collapsed;
+            ViewLastHandledButton.IsEnabled = false;
+            UpdateLedgerReuseHint();
+            return;
+        }
+
+        var latest = records[0];
+        MachineHistoryNoticeText.Text =
+            $"本机历史处理 {records.Count} 次 · 最近一次 {latest.FinishedAt:yyyy-MM-dd HH:mm:ss}"
+            + $"（{LedgerRules.DescribeCategory(latest.Category)} · {LedgerRules.DescribeConclusion(latest.Conclusion)}）。";
+        LedgerHistoryNoticeText.Text =
+            $"该机器此前处理过 {records.Count} 次，最近结论：{LedgerRules.DescribeConclusion(latest.Conclusion)}。可点击“查看上次处理”。";
+        LedgerHistoryNoticeText.Visibility = Visibility.Visible;
+        ViewLastHandledButton.IsEnabled = true;
+        UpdateLedgerReuseHint();
+    }
+
+    /// <summary>
+    /// 刷新“问题类别”卡片下的历史沿用提示（展示该机器最近一次的类别与结论，便于沿用或调整）。
+    /// </summary>
+    private void UpdateLedgerReuseHint()
+    {
+        var (machineId, _, _) = ResolveCurrentMachine();
+        if (string.IsNullOrWhiteSpace(machineId))
+        {
+            LedgerReuseHintText.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        var latest = _ledgerRecords
+            .Where(record => string.Equals(record.MachineId, machineId, StringComparison.Ordinal))
+            .OrderByDescending(record => record.FinishedAt)
+            .FirstOrDefault();
+
+        if (latest is null)
+        {
+            LedgerReuseHintText.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        LedgerReuseHintText.Text =
+            $"该机器最近一次：类别 {LedgerRules.DescribeCategory(latest.Category)}、结论 {LedgerRules.DescribeConclusion(latest.Conclusion)}；"
+            + $"当前选择类别：{CurrentCategoryText()}。";
+        LedgerReuseHintText.Visibility = Visibility.Visible;
+    }
+
+    /// <summary>取当前选择的问题类别中文文本（未选时按“其他”）。</summary>
+    /// <returns>问题类别中文文本。</returns>
+    private string CurrentCategoryText()
+        => (LedgerCategoryCombo.SelectedItem as LedgerCategoryOption)?.Text ?? LedgerRules.DescribeCategory(ProblemCategory.Other);
+
+    /// <summary>结论单选变化：选中“未解决”时展开未解决原因与说明。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private void OnLedgerConclusionChanged(object sender, RoutedEventArgs e)
+    {
+        LedgerUnresolvedPanel.Visibility = LedgerConclusionUnresolvedRadio.IsChecked == true
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+    }
+
+    /// <summary>问题类别变化：刷新历史沿用提示。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private void OnLedgerCategoryChanged(object sender, SelectionChangedEventArgs e) => UpdateLedgerReuseHint();
+
+    /// <summary>员工现象描述变化：刷新字数计数。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private void OnSymptomChanged(object sender, TextChangedEventArgs e)
+        => LedgerSymptomCountText.Text = $"{LedgerSymptomBox.Text.Length} / {LedgerRules.SymptomMaxLength}";
+
+    /// <summary>点击“查看上次处理”：切换到“目标机档案”子页查看本机历史记录。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private void OnViewLastHandledClick(object sender, RoutedEventArgs e)
+    {
+        if (ViewLastHandledButton.IsEnabled)
+        {
+            LedgerTabs.SelectedIndex = 1;
+        }
+    }
+
+    /// <summary>点击“登记为介质处理人”：校验后二次确认并登记到 data/operators.json。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private void OnSaveOperatorClick(object sender, RoutedEventArgs e)
+    {
+        var candidate = new OperatorInfo(LedgerOperatorIdBox.Text.Trim(), LedgerOperatorNameBox.Text.Trim());
+        if (!LedgerRules.IsCompleteOperator(candidate))
+        {
+            MessageBox.Show(this, "处理人工号与姓名均必填。", "DeskIT", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (_currentOperator is not null && SameOperator(_currentOperator, candidate))
+        {
+            LedgerOperatorHintText.Text = $"介质当前登记处理人已是 {candidate.DisplayText}，无需重复登记。";
+            return;
+        }
+
+        var confirm = MessageBox.Show(
+            this,
+            $"确认将 {candidate.DisplayText} 登记为介质处理人？\n登记信息随介质保存，跨机、跨启动持续有效。",
+            "DeskIT",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question);
+        if (confirm != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        try
+        {
+            _mediaStateStore.SetCurrentOperator(_dataDirectory, candidate);
+            _currentOperator = candidate;
+            LedgerOperatorHintText.Text = $"已登记介质处理人：{candidate.DisplayText}（工号与姓名已保存到 data/operators.json）。";
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            MessageBox.Show(this, $"登记失败（介质可能不可写）：{ex.Message}", "DeskIT", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    /// <summary>
+    /// 点击“完成会话并产出报告”：校验记录 → 静默产出脱敏报告 → 追加写入台账；介质不可写时阻止结束。
+    /// </summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private void OnFinishSessionClick(object sender, RoutedEventArgs e)
+    {
+        if (_ledgerBusy)
+        {
+            return;
+        }
+
+        if (_verdict is null || !_verdict.CanStart)
+        {
+            MessageBox.Show(this, "启动自检未通过，暂不能完成会话并写入台账。", "DeskIT", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        if (!_ledgerSessionActive)
+        {
+            MessageBox.Show(this, "本次尚未建立会话：请先进行设备信息采集或问题诊断。", "DeskIT", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var (machineId, machineSource, hostName) = ResolveCurrentMachine();
+        if (string.IsNullOrWhiteSpace(machineId))
+        {
+            MessageBox.Show(this, "本次处理尚未建立机器标识：请先在“设备信息采集（M2）”完成一次采集。", "DeskIT", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var operatorInfo = new OperatorInfo(LedgerOperatorIdBox.Text.Trim(), LedgerOperatorNameBox.Text.Trim());
+        if (!LedgerRules.IsCompleteOperator(operatorInfo))
+        {
+            MessageBox.Show(this, "处理人工号与姓名均必填（可在上方点击“登记为介质处理人”保存到介质）。", "DeskIT", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (_currentOperator is not null && !SameOperator(_currentOperator, operatorInfo))
+        {
+            var confirm = MessageBox.Show(
+                this,
+                $"处理人 {operatorInfo.DisplayText} 与介质当前登记（{_currentOperator.DisplayText}）不一致。\n本次记录将按当前填写写入（仅影响本次记录），是否继续？",
+                "DeskIT",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question);
+            if (confirm != MessageBoxResult.Yes)
+            {
+                return;
+            }
+        }
+
+        var conclusion = CurrentConclusion();
+        UnresolvedReason? reason = null;
+        if (conclusion == SessionConclusion.Unresolved)
+        {
+            if (LedgerUnresolvedReasonCombo.SelectedItem is not LedgerUnresolvedReasonOption reasonOption)
+            {
+                MessageBox.Show(this, "结论为“未解决”时必须选择未解决原因。", "DeskIT", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            reason = reasonOption.Reason;
+        }
+
+        var now = DateTimeOffset.Now;
+        var draft = new HandlingRecord
+        {
+            RecordId = LedgerRules.NewRecordId(now),
+            SessionId = _ledgerSessionId,
+            MachineId = machineId,
+            MachineIdSource = machineSource,
+            HostName = hostName,
+            Operator = operatorInfo,
+            Category = (LedgerCategoryCombo.SelectedItem as LedgerCategoryOption)?.Category ?? ProblemCategory.Other,
+            Tags = ParseTags(LedgerTagsBox.Text),
+            SymptomDescription = LedgerSymptomBox.Text.Trim(),
+            Scenes = _ledgerScenes,
+            Actions = _rawActionResults.Select(LedgerActionEntry.FromExecution).ToList(),
+            CustomCommands = Array.Empty<LedgerCustomCommandEntry>(),
+            Conclusion = conclusion,
+            UnresolvedReason = reason,
+            UnresolvedNote = LedgerUnresolvedNoteBox.Text.Trim(),
+            Privilege = _privilege,
+            StartedAt = _ledgerSessionStartedAt ?? now,
+            FinishedAt = now,
+            ReportFileName = string.Empty
+        };
+
+        // 先按命名规则给出预期报告名，报告成功产出后以实际文件名（含版本号）覆盖，保证台账与文件一致。
+        draft = draft with { ReportFileName = LedgerRules.BuildReportFileName(draft) + ".html" };
+
+        var validation = LedgerRules.Validate(draft);
+        if (!validation.IsValid)
+        {
+            MessageBox.Show(this, "记录校验未通过：\n" + string.Join("\n", validation.Problems), "DeskIT", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        _ledgerBusy = true;
+        SetLedgerBusy(true);
+        try
+        {
+            var writeResult = _reportWriter.WriteReports(_dataDirectory, draft);
+            var record = writeResult.Success && !string.IsNullOrWhiteSpace(writeResult.HtmlFileName)
+                ? draft with { ReportFileName = writeResult.HtmlFileName! }
+                : draft;
+
+            _ledgerStore.Append(_dataDirectory, record);
+
+            LedgerFinishStatusText.Text =
+                $"已写入台账：{record.RecordId} · {LedgerRules.DescribeCategory(record.Category)} · {LedgerRules.DescribeConclusion(record.Conclusion)}"
+                + $" · {record.FinishedAt:yyyy-MM-dd HH:mm:ss}（本次 {record.Actions.Count} 个动作）。";
+
+            LedgerReportResultText.Text = writeResult.Success
+                ? $"脱敏报告已产出：{record.ReportFileName}（HTML + Markdown，位于 U 盘 reports 目录）。"
+                : writeResult.Error ?? "报告生成失败（记录已写入，未阻断）。";
+            LedgerReportResultText.Foreground = new SolidColorBrush(
+                writeResult.Success ? Color.FromRgb(0x16, 0xA3, 0x4A) : Color.FromRgb(0xB4, 0x53, 0x09));
+            LedgerReportResultText.Visibility = Visibility.Visible;
+
+            EndLedgerSession();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // 介质不可写（或已拔出）：阻止结束，保留会话以便处理后重试。
+            MessageBox.Show(
+                this,
+                $"写入台账失败（介质可能不可写或已拔出），本次会话未结束：{ex.Message}",
+                "DeskIT",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+        finally
+        {
+            _ledgerBusy = false;
+            SetLedgerBusy(false);
+        }
+    }
+
+    /// <summary>按单选按钮取当前选择的会话结论（默认“已解决”）。</summary>
+    /// <returns>会话结论。</returns>
+    private SessionConclusion CurrentConclusion()
+    {
+        if (LedgerConclusionRestartRadio.IsChecked == true)
+        {
+            return SessionConclusion.PendingRestart;
+        }
+
+        return LedgerConclusionUnresolvedRadio.IsChecked == true
+            ? SessionConclusion.Unresolved
+            : SessionConclusion.Resolved;
+    }
+
+    /// <summary>把标签文本框拆分为标签清单（支持中英文逗号、分号、顿号与空格分隔并去重）。</summary>
+    /// <param name="text">标签文本。</param>
+    /// <returns>标签清单；空白时为空清单。</returns>
+    private static IReadOnlyList<string> ParseTags(string text)
+        => string.IsNullOrWhiteSpace(text)
+            ? Array.Empty<string>()
+            : text.Split(
+                    new[] { ',', '，', ';', '；', '、', ' ' },
+                    StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+
+    /// <summary>判断两个处理人是否为同一人（工号忽略大小写、姓名区分大小写）。</summary>
+    /// <param name="left">处理人一。</param>
+    /// <param name="right">处理人二。</param>
+    /// <returns>完全相同返回 true。</returns>
+    private static bool SameOperator(OperatorInfo left, OperatorInfo right)
+        => string.Equals(left.EmployeeId, right.EmployeeId, StringComparison.OrdinalIgnoreCase)
+           && string.Equals(left.Name, right.Name, StringComparison.Ordinal);
+
+    /// <summary>结束本次会话：清空会话缓存与表单，重新加载台账并刷新界面。</summary>
+    private void EndLedgerSession()
+    {
+        _ledgerSessionActive = false;
+        _ledgerSessionStartedAt = null;
+        _ledgerScenes = Array.Empty<DiagnosisSceneResult>();
+        _rawActionResults.Clear();
+
+        LedgerSymptomBox.Clear();
+        LedgerTagsBox.Clear();
+        LedgerUnresolvedNoteBox.Clear();
+        LedgerConclusionResolvedRadio.IsChecked = true;
+        LedgerUnresolvedPanel.Visibility = Visibility.Collapsed;
+        LedgerCategoryCombo.SelectedIndex = 0;
+
+        ReloadLedgerFromDisk();
+        RefreshReportList();
+        RefreshLedgerSessionUi();
+    }
+
+    /// <summary>切换 M7 台账忙碌态（写台账 / 导出期间禁用触发按钮）。</summary>
+    /// <param name="busy">是否忙碌。</param>
+    private void SetLedgerBusy(bool busy)
+    {
+        FinishLedgerButton.IsEnabled = !busy && _ledgerSessionActive;
+        SaveOperatorButton.IsEnabled = !busy;
+        ExportLedgerButton.IsEnabled = !busy;
+        ReloadLedgerButton.IsEnabled = !busy;
+    }
+
+    /// <summary>
+    /// 确保台账已加载（首次进入本页时读取 data\ledger.db），随后刷新会话界面与报告列表。
+    /// </summary>
+    private void EnsureLedgerLoaded()
+    {
+        if (!_ledgerLoaded)
+        {
+            ReloadLedgerFromDisk();
+            _ledgerLoaded = true;
+        }
+
+        RefreshLedgerSessionUi();
+        RefreshReportList();
+    }
+
+    /// <summary>点击“重新加载台账”：从磁盘重读台账并刷新界面与报告列表。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private void OnReloadLedgerClick(object sender, RoutedEventArgs e)
+    {
+        ReloadLedgerFromDisk();
+        RefreshLedgerSessionUi();
+        RefreshReportList();
+    }
+
+    /// <summary>
+    /// 从磁盘读取全部台账记录，并检测机器标识冲突；读取失败时按空台账处理。
+    /// </summary>
+    private void ReloadLedgerFromDisk()
+    {
+        try
+        {
+            _ledgerRecords = _ledgerStore.LoadAll(_dataDirectory);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _ledgerRecords = Array.Empty<HandlingRecord>();
+            LedgerFinishStatusText.Text = $"台账读取失败：{ex.Message}";
+        }
+
+        var conflicts = LedgerRules.DetectMachineIdConflicts(_ledgerRecords);
+        _ledgerConflictRecordIds = conflicts
+            .SelectMany(conflict => new[] { conflict.FirstRecordId, conflict.SecondRecordId })
+            .ToHashSet(StringComparer.Ordinal);
+
+        if (conflicts.Count == 0)
+        {
+            LedgerConflictText.Visibility = Visibility.Collapsed;
+        }
+        else
+        {
+            LedgerConflictText.Text =
+                $"检测到 {conflicts.Count} 组机器标识冲突（同一标识存在时间区间重叠的记录，可能为克隆镜像，需人工确认）："
+                + string.Join("；", conflicts.Select(conflict => $"{conflict.MachineId}：{conflict.FirstRecordId} 与 {conflict.SecondRecordId}"));
+            LedgerConflictText.Visibility = Visibility.Visible;
+        }
+
+        ApplyLedgerFilter();
+    }
+
+    /// <summary>点击“应用筛选”：按当前筛选条件过滤台账并刷新总览。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private void OnApplyLedgerFilterClick(object sender, RoutedEventArgs e) => ApplyLedgerFilter();
+
+    /// <summary>点击“重置”：清空全部筛选条件并重新展示全部记录。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private void OnResetLedgerFilterClick(object sender, RoutedEventArgs e)
+    {
+        LedgerFilterCategoryCombo.SelectedIndex = 0;
+        LedgerFilterOperatorBox.Clear();
+        LedgerFilterFromPicker.SelectedDate = null;
+        LedgerFilterToPicker.SelectedDate = null;
+        ApplyLedgerFilter();
+    }
+
+    /// <summary>
+    /// 按筛选控件过滤台账记录（类别 / 处理人工号 / 处理时间闭区间）并渲染总览。
+    /// </summary>
+    private void ApplyLedgerFilter()
+    {
+        var category = (LedgerFilterCategoryCombo.SelectedItem as LedgerCategoryFilterOption)?.Category;
+        var from = LedgerFilterFromPicker.SelectedDate is { } fromDate
+            ? new DateTimeOffset(fromDate.Date)
+            : (DateTimeOffset?)null;
+        var to = LedgerFilterToPicker.SelectedDate is { } toDate
+            ? new DateTimeOffset(toDate.Date.AddDays(1).AddTicks(-1))
+            : (DateTimeOffset?)null;
+
+        _ledgerFilteredRecords = LedgerRules.Filter(_ledgerRecords, category, LedgerFilterOperatorBox.Text, from, to);
+        RenderLedgerOverview(_ledgerFilteredRecords);
+    }
+
+    /// <summary>渲染台账总览：统计文本、机器列表与选中机器的记录列表。</summary>
+    /// <param name="records">当前筛选结果。</param>
+    private void RenderLedgerOverview(IReadOnlyList<HandlingRecord> records)
+    {
+        var statView = LedgerViewFactory.BuildStatistics(LedgerRules.BuildStatistics(records));
+        LedgerStatText.Text = statView.TotalText;
+        LedgerStatCategoryText.Text = statView.CategoryText;
+        LedgerStatOperatorText.Text = statView.OperatorText;
+        LedgerStatUnresolvedText.Text = statView.UnresolvedText;
+
+        var machines = LedgerRules.GroupByMachine(records)
+            .Select(ledger => LedgerViewFactory.BuildMachine(ledger, _ledgerConflictRecordIds))
+            .ToList();
+        LedgerMachineList.ItemsSource = machines;
+
+        if (machines.Count > 0)
+        {
+            LedgerMachineList.SelectedIndex = 0;
+        }
+        else
+        {
+            LedgerRecordList.ItemsSource = null;
+        }
+    }
+
+    /// <summary>选中机器变化：把该机器的记录展示到右侧记录列表。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private void OnLedgerMachineSelectionChanged(object sender, SelectionChangedEventArgs e)
+        => LedgerRecordList.ItemsSource = (LedgerMachineList.SelectedItem as LedgerMachineView)?.Records;
+
+    /// <summary>点击“导出…”：按选定范围与格式导出台账或单条记录报告。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private void OnExportLedgerClick(object sender, RoutedEventArgs e)
+    {
+        if (_ledgerBusy)
+        {
+            return;
+        }
+
+        var scope = (LedgerExportScopeCombo.SelectedItem as LedgerExportScopeOption)?.Scope ?? LedgerExportScope.All;
+        var format = (LedgerExportFormatCombo.SelectedItem as LedgerExportFormatOption)?.Format ?? LedgerExportFormat.Csv;
+        var records = ResolveExportRecords(scope);
+        if (records.Count == 0)
+        {
+            LedgerExportStatusText.Text = "所选范围没有可导出的记录。";
+            return;
+        }
+
+        var reportsRoot = ResolveReportsRoot();
+        Directory.CreateDirectory(reportsRoot);
+
+        if (format == LedgerExportFormat.Csv)
+        {
+            var csvDialog = new Microsoft.Win32.SaveFileDialog
+            {
+                InitialDirectory = reportsRoot,
+                FileName = $"ledger-{DateTime.Now:yyyyMMdd-HHmmss}.csv",
+                Filter = "CSV 文件 (*.csv)|*.csv"
+            };
+            if (csvDialog.ShowDialog(this) != true)
+            {
+                return;
+            }
+
+            try
+            {
+                File.WriteAllText(csvDialog.FileName, LedgerReportBuilder.BuildCsv(records), new UTF8Encoding(true));
+                LedgerExportStatusText.Text = $"已导出 {records.Count} 条台账记录：{csvDialog.FileName}";
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                LedgerExportStatusText.Text = $"导出失败：{ex.Message}";
+            }
+
+            return;
+        }
+
+        // HTML / Markdown：取范围内最近一条记录的脱敏报告（静默产出固定脱敏）。
+        var latest = records.OrderByDescending(record => record.FinishedAt).First();
+        var isHtml = format == LedgerExportFormat.Html;
+        var content = isHtml
+            ? LedgerReportBuilder.BuildHtml(latest, desensitized: true)
+            : LedgerReportBuilder.BuildMarkdown(latest, desensitized: true);
+
+        var extension = isHtml ? "html" : "md";
+        var reportDialog = new Microsoft.Win32.SaveFileDialog
+        {
+            InitialDirectory = reportsRoot,
+            FileName = $"{LedgerRules.BuildReportFileName(latest)}.{extension}",
+            Filter = isHtml ? "HTML 文件 (*.html)|*.html" : "Markdown 文件 (*.md)|*.md"
+        };
+        if (reportDialog.ShowDialog(this) != true)
+        {
+            return;
+        }
+
+        try
+        {
+            File.WriteAllText(reportDialog.FileName, content, new UTF8Encoding(true));
+            LedgerExportStatusText.Text = $"已导出记录 {latest.RecordId} 的报告：{reportDialog.FileName}";
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            LedgerExportStatusText.Text = $"导出失败：{ex.Message}";
+        }
+    }
+
+    /// <summary>按导出范围取记录集合。</summary>
+    /// <param name="scope">导出范围。</param>
+    /// <returns>范围内的记录集合。</returns>
+    private IReadOnlyList<HandlingRecord> ResolveExportRecords(LedgerExportScope scope) => scope switch
+    {
+        LedgerExportScope.CurrentFiltered => _ledgerFilteredRecords,
+        LedgerExportScope.CurrentMachine => ExportCurrentMachineRecords(),
+        _ => _ledgerRecords
+    };
+
+    /// <summary>取当前处理机器的全部记录（用于导出“当前处理机器”范围）。</summary>
+    /// <returns>当前机器的记录集合；无机器标识时为空集合。</returns>
+    private IReadOnlyList<HandlingRecord> ExportCurrentMachineRecords()
+    {
+        var (machineId, _, _) = ResolveCurrentMachine();
+        return string.IsNullOrWhiteSpace(machineId)
+            ? Array.Empty<HandlingRecord>()
+            : _ledgerRecords.Where(record => string.Equals(record.MachineId, machineId, StringComparison.Ordinal)).ToList();
+    }
+
+    /// <summary>解析报告目录（reports 与 data 目录同级）。</summary>
+    /// <returns>报告目录绝对路径。</returns>
+    private string ResolveReportsRoot()
+    {
+        var trimmed = Path.TrimEndingDirectorySeparator(_dataDirectory);
+        var parent = Path.GetDirectoryName(trimmed);
+        var baseDirectory = string.IsNullOrEmpty(parent) ? trimmed : parent;
+        return Path.Combine(baseDirectory, "reports");
+    }
+
+    /// <summary>点击“刷新列表”：重新读取 reports 目录下的报告文件清单。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private void OnRefreshReportsClick(object sender, RoutedEventArgs e) => RefreshReportList();
+
+    /// <summary>刷新报告查看器的文件清单（按修改时间倒序）。</summary>
+    private void RefreshReportList()
+    {
+        try
+        {
+            LedgerReportList.ItemsSource = _reportWriter.ListReports(_dataDirectory)
+                .Select(LedgerViewFactory.BuildReportFile)
+                .ToList();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            LedgerReportList.ItemsSource = null;
+            LedgerExportStatusText.Text = $"报告列表读取失败：{ex.Message}";
+        }
+    }
+
+    /// <summary>点击“用浏览器打开”：用系统默认程序打开选中的报告文件。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private void OnOpenReportClick(object sender, RoutedEventArgs e)
+    {
+        if (LedgerReportList.SelectedItem is LedgerReportFileView file)
+        {
+            OpenWithShell(file.FullPath);
+            return;
+        }
+
+        MessageBox.Show(this, "请先在报告列表中选择一个报告文件。", "DeskIT", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
+    /// <summary>点击“打开所在文件夹”：打开选中报告所在目录（未选中时打开 reports 目录）。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private void OnOpenReportFolderClick(object sender, RoutedEventArgs e)
+    {
+        var directory = LedgerReportList.SelectedItem is LedgerReportFileView file
+            ? Path.GetDirectoryName(file.FullPath) ?? ResolveReportsRoot()
+            : ResolveReportsRoot();
+
+        try
+        {
+            Directory.CreateDirectory(directory);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            MessageBox.Show(this, $"创建报告目录失败：{ex.Message}", "DeskIT", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        OpenWithShell(directory);
+    }
+
+    /// <summary>以系统外壳打开文件或目录（离线操作，不发起任何网络请求）。</summary>
+    /// <param name="path">文件或目录绝对路径。</param>
+    private static void OpenWithShell(string path)
+    {
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true });
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or FileNotFoundException)
+        {
+            MessageBox.Show($"无法打开：{ex.Message}", "DeskIT", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
     }
 }

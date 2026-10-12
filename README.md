@@ -33,9 +33,9 @@ DeskIT/
    └─ DeskIT.Core.Tests/  Core 规则的 xUnit 单元测试
 ```
 
-- **DeskIT.Core**：风险级别、动作结果、诊断结论四态、会话状态机等枚举；采集分组/快照/档案模型、诊断结论/场景/会话模型、动作定义/执行结果/备份记录模型、软件包描述与安装器归因模型、本地账号与权限快照模型；以及“启动自检阈值与能力推导”“机器标识回退与档案归并”“快照保留上限”“按风险排序且需重启动作排最后”“动作风险分级与确认要求、参数绑定转义与结果归类”“诊断结论异常置顶与四态统计”“会话状态机合法迁移”“包完整性判定与版本比较、安装器退出码归因”“账号状态与密码策略解析、UAC 风险描述”等可测试的纯函数规则。
-- **DeskIT.Windows**：启动自检能力（权限、提权、单实例、完整性、目录读写、卷空间、系统版本）、设备信息只读采集（WMI / 注册表 / 网络接口 / 卷信息）、档案与快照存储、PowerShell 5.1 执行器、场景化问题诊断（M3）、修复动作库加载 / 前置条件检查 / 统一执行器 / 备份区存储（M4），以及软件包库加载与哈希校验 / 安装卸载编排（M5）、账号与权限只读查询（M6）。
-- **DeskIT.App**：WPF 界面外壳（M1 便携启动 / M2 设备信息采集 / M3 问题诊断 / M4 修复动作库 / M5 软件安装卸载 / M6 账号与权限），引用 Core 与 Windows。
+- **DeskIT.Core**：风险级别、动作结果、诊断结论四态、会话状态机等枚举；采集分组/快照/档案模型、诊断结论/场景/会话模型、动作定义/执行结果/备份记录模型、软件包描述与安装器归因模型、本地账号与权限快照模型、处理记录/台账/统计与脱敏报告模型；以及“启动自检阈值与能力推导”“机器标识回退与档案归并”“快照保留上限”“按风险排序且需重启动作排最后”“动作风险分级与确认要求、参数绑定转义与结果归类”“诊断结论异常置顶与四态统计”“会话状态机合法迁移”“包完整性判定与版本比较、安装器退出码归因”“账号状态与密码策略解析、UAC 风险描述”“记录关键字段校验与统计、按条件筛选与按机器归并、机器标识冲突检测、姓名遮蔽与凭据掩码、自包含报告构建”等可测试的纯函数规则。
+- **DeskIT.Windows**：启动自检能力（权限、提权、单实例、完整性、目录读写、卷空间、系统版本）、设备信息只读采集（WMI / 注册表 / 网络接口 / 卷信息）、档案与快照存储、PowerShell 5.1 执行器、场景化问题诊断（M3）、修复动作库加载 / 前置条件检查 / 统一执行器 / 备份区存储（M4）、软件包库加载与哈希校验 / 安装卸载编排（M5）、账号与权限只读查询（M6），以及台账追加式存储与报告写出（M7）。
+- **DeskIT.App**：WPF 界面外壳（M1 便携启动 / M2 设备信息采集 / M3 问题诊断 / M4 修复动作库 / M5 软件安装卸载 / M6 账号与权限 / M7 记录与多机台账），引用 Core 与 Windows。
 
 ## 构建 / 测试 / 发布
 
@@ -69,6 +69,7 @@ powershell -ExecutionPolicy Bypass -File tools\Generate-Manifest.ps1 -PublishDir
 | 4 | M3 问题诊断 | 已完成 |
 | 5 | M4 修复动作库 | 已完成 |
 | 6 | M5 软件安装与卸载 + M6 账号与权限辅助 | 已完成 |
+| 7 | M7 记录与多机台账 | 已完成 |
 
 **M1（步骤 2）**：启动页呈现三块内容——启动自检结果（程序完整性、数据目录可写、介质可用空间、目标系统版本、当前权限、并发实例）、当前权限与提权入口（管理员提权 / 只读回退）、本次能力摘要；并实现高级模式的介质级开关（随 `data/operators.json` 保存，开启需二次确认）。
 - 判定规则集中在 [StartupRules.cs](src/DeskIT.Core/StartupRules.cs)（纯逻辑、可单测）：空间 200 MB / 500 MB 阈值、系统版本支持范围、完整性结论、能力推导。
@@ -112,6 +113,14 @@ powershell -ExecutionPolicy Bypass -File tools\Generate-Manifest.ps1 -PublishDir
 - 查询由**单条 PowerShell 5.1 脚本**一次性输出 JSON（`ConvertTo-Json -Compress`）后由程序解析，查询超时可取消，**不产生任何系统变更**。
 - 账号的**变更类操作**（解除锁定 / 启用 / 停用 / 重命名）不新建执行通道，而是作为动作写入 `actions/account.json`，从而自动获得 M4 的逐项二次确认、回滚说明与备份审计。
 - 纯规则见 [AccountRules.cs](src/DeskIT.Core/AccountRules.cs) 与 [AccountModels.cs](src/DeskIT.Core/AccountModels.cs)；只读查询见 [AccountDirectoryQuery.cs](src/DeskIT.Windows/AccountDirectoryQuery.cs)；账号变更动作见 [actions/account.json](actions/account.json)；界面见 [MainWindow.xaml](src/DeskIT.App/MainWindow.xaml) 的“账号与权限（M6）”页。
+
+**M7（步骤 7）**：记录与多机台账页把每次会话沉淀为**处理记录**（自动带处理人工号 + 姓名，含问题类别、现象描述、诊断结论、执行的动作与结果、会话结论与结束时间），归并成**单份全量台账**，并在会话正常结束时**静默产出脱敏的自包含报告**（HTML + Markdown）。
+- 台账以**仅追加**的 NDJSON（U 盘 `data\ledger.db`）落盘（记录行 + 补录行，逐行独立、单行损坏不影响其余行），加载时按记录标识归并补录；全部数据写在 U 盘，不向目标机磁盘写入任何产物。
+- 处理人在 `data\operators.json` 中登记（工号 + 姓名），未登记时在页内就地登记即可继续；记录落盘时**自动带上**当前处理人。
+- 会话结束时按“处理人 → 机器标识 → 会话结论”前置校验：未解决必须选择未解决原因；机器标识尚未建立（无采集/诊断档案）时**阻止写入台账**并提示先完成采集或诊断。
+- 报告**默认脱敏**：处理人姓名遮蔽（1 字原样、2 字 → `张*`、3 字及以上 → `张*明`）而工号保留；脚本输出与诊断依据中的 `password= / passwd: / pwd= / /pass: / -p / --password` 等凭据值掩码为 `******`。报告为**自包含 HTML**（内联样式、无脚本、无任何出网引用），双击即可离线打开；同名文件按 `-v2 / -v3` 版本化成对追加（HTML 与 Markdown 使用同一版本号）。
+- 台账总览提供按**问题类别 / 处理人工号 / 处理时间区间**筛选、按机器归并的档案视图（最近处理时间倒序、显示最近结论）与统计汇总（总数 / 机器数 / 各类别与处理人计数 / 未解决占比），并可把当前筛选结果导出为 **CSV 台账表**（多条）或单条 **HTML / Markdown 报告**；报告量少时按机器标识与会话标识自动命名，写入失败**不抛异常**（如实提示并保留台账记录）。
+- 纯规则见 [LedgerModels.cs](src/DeskIT.Core/LedgerModels.cs)、[LedgerRules.cs](src/DeskIT.Core/LedgerRules.cs) 与 [LedgerReportBuilder.cs](src/DeskIT.Core/LedgerReportBuilder.cs)；台账落盘与报告写出见 [LedgerStore.cs](src/DeskIT.Windows/LedgerStore.cs) 与 [ReportWriter.cs](src/DeskIT.Windows/ReportWriter.cs)；界面见 [MainWindow.xaml](src/DeskIT.App/MainWindow.xaml) 的“记录与台账（M7）”页（本次会话 / 目标机档案 / 台账总览三视图）。
 
 ## 关于需求文档
 

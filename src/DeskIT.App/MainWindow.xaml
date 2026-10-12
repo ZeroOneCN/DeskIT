@@ -20,6 +20,7 @@
         <local:PackageMatchToBrushConverter x:Key="PackageMatchBrush" />
         <local:InstallerOutcomeToBrushConverter x:Key="InstallerOutcomeBrush" />
         <local:AccountRowToBrushConverter x:Key="AccountRowBrush" />
+        <local:LedgerConclusionToBrushConverter x:Key="LedgerConclusionBrush" />
         <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
 
         <Style x:Key="CardBorder" TargetType="Border">
@@ -948,6 +949,398 @@
                         </Border>
                     </Grid>
                 </Grid>
+            </TabItem>
+
+            <!-- ============ M7 记录与多机台账 ============ -->
+            <TabItem Header="记录与台账（M7）">
+                <TabControl x:Name="LedgerTabs" Margin="0,4,0,0">
+                    <!-- 本次会话 -->
+                    <TabItem Header="本次会话">
+                        <Grid Margin="0,4,0,0">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+
+                            <Border Grid.Row="0" Style="{StaticResource CardBorder}">
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource CardTitle}"
+                                               Text="本次会话（采集 / 诊断 / 动作自动建立；结束后确认结论与问题类别）" />
+                                    <TextBlock x:Name="LedgerSessionInfoText" FontSize="12" FontWeight="SemiBold"
+                                               Foreground="#111827" TextWrapping="Wrap"
+                                               Text="尚未建立会话：请先在“设备信息采集（M2）”“问题诊断（M3）”中开始一次处理。" />
+                                    <TextBlock x:Name="LedgerHistoryNoticeText" FontSize="12" Foreground="#1D4ED8"
+                                               TextWrapping="Wrap" Margin="0,4,0,0" Visibility="Collapsed" />
+                                    <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                        <Button x:Name="ViewLastHandledButton" Height="30" Padding="12,0"
+                                                Content="查看上次处理" IsEnabled="False" Click="OnViewLastHandledClick" />
+                                        <TextBlock Foreground="#9CA3AF" FontSize="11" Margin="12,0,0,0"
+                                                   VerticalAlignment="Center" TextWrapping="Wrap"
+                                                   Text="按机器标识归并：同一机器第二次处理时，这里会提示历史处理次数与最近结论。" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+
+                            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="0,12,0,0">
+                                <StackPanel x:Name="LedgerFormPanel" IsEnabled="False">
+                                    <Border Style="{StaticResource CardBorder}">
+                                        <StackPanel>
+                                            <TextBlock Style="{StaticResource CardTitle}"
+                                                       Text="结论（必填；选择“未解决”时必须选择原因）" />
+                                            <StackPanel Orientation="Horizontal">
+                                                <RadioButton x:Name="LedgerConclusionResolvedRadio" GroupName="LedgerConclusion"
+                                                             Content="已解决" IsChecked="True" Checked="OnLedgerConclusionChanged"
+                                                             VerticalAlignment="Center" />
+                                                <RadioButton x:Name="LedgerConclusionRestartRadio" GroupName="LedgerConclusion"
+                                                             Content="待重启生效" Margin="16,0,0,0" Checked="OnLedgerConclusionChanged"
+                                                             VerticalAlignment="Center" />
+                                                <RadioButton x:Name="LedgerConclusionUnresolvedRadio" GroupName="LedgerConclusion"
+                                                             Content="未解决" Margin="16,0,0,0" Checked="OnLedgerConclusionChanged"
+                                                             VerticalAlignment="Center" />
+                                            </StackPanel>
+                                            <StackPanel x:Name="LedgerUnresolvedPanel" Orientation="Horizontal"
+                                                        Margin="0,10,0,0" Visibility="Collapsed">
+                                                <TextBlock Text="未解决原因：" FontSize="12" Foreground="#6B7280"
+                                                           VerticalAlignment="Center" />
+                                                <ComboBox x:Name="LedgerUnresolvedReasonCombo" Width="240" Height="28"
+                                                          Margin="6,0,0,0" DisplayMemberPath="Text" />
+                                                <TextBlock Text="说明：" FontSize="12" Foreground="#6B7280"
+                                                           VerticalAlignment="Center" Margin="16,0,0,0" />
+                                                <TextBox x:Name="LedgerUnresolvedNoteBox" Width="300" Height="28"
+                                                         Margin="6,0,0,0" VerticalContentAlignment="Center" />
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </Border>
+
+                                    <Border Style="{StaticResource CardBorder}" Margin="0,12,0,0">
+                                        <StackPanel>
+                                            <TextBlock Style="{StaticResource CardTitle}"
+                                                       Text="问题类别与标签（类别必填，一条记录一个主类别）" />
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock Text="问题类别：" FontSize="12" Foreground="#6B7280"
+                                                           VerticalAlignment="Center" />
+                                                <ComboBox x:Name="LedgerCategoryCombo" Width="200" Height="28"
+                                                          Margin="6,0,0,0" DisplayMemberPath="Text"
+                                                          SelectionChanged="OnLedgerCategoryChanged" />
+                                                <TextBlock Text="自定义标签：" FontSize="12" Foreground="#6B7280"
+                                                           VerticalAlignment="Center" Margin="16,0,0,0" />
+                                                <TextBox x:Name="LedgerTagsBox" Width="260" Height="28"
+                                                         Margin="6,0,0,0" VerticalContentAlignment="Center" />
+                                            </StackPanel>
+                                            <TextBlock x:Name="LedgerReuseHintText" FontSize="12" Foreground="#1D4ED8"
+                                                       TextWrapping="Wrap" Margin="0,8,0,0" Visibility="Collapsed" />
+                                        </StackPanel>
+                                    </Border>
+
+                                    <Border Style="{StaticResource CardBorder}" Margin="0,12,0,0">
+                                        <StackPanel>
+                                            <TextBlock Style="{StaticResource CardTitle}" Text="员工现象描述（选填，≤ 500 字）" />
+                                            <TextBox x:Name="LedgerSymptomBox" Height="70" AcceptsReturn="True"
+                                                     TextWrapping="Wrap" MaxLength="500" VerticalScrollBarVisibility="Auto"
+                                                     TextChanged="OnSymptomChanged" />
+                                            <TextBlock x:Name="LedgerSymptomCountText" FontSize="11" Foreground="#9CA3AF"
+                                                       Margin="0,4,0,0" Text="0 / 500" />
+                                        </StackPanel>
+                                    </Border>
+
+                                    <Border Style="{StaticResource CardBorder}" Margin="0,12,0,0">
+                                        <StackPanel>
+                                            <TextBlock Style="{StaticResource CardTitle}"
+                                                       Text="处理人（工号与姓名均必填；默认取介质当前登记，会话中修改仅影响本次记录，需二次确认）" />
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock Text="工号：" FontSize="12" Foreground="#6B7280"
+                                                           VerticalAlignment="Center" />
+                                                <TextBox x:Name="LedgerOperatorIdBox" Width="160" Height="28"
+                                                         Margin="6,0,0,0" VerticalContentAlignment="Center" />
+                                                <TextBlock Text="姓名：" FontSize="12" Foreground="#6B7280"
+                                                           VerticalAlignment="Center" Margin="16,0,0,0" />
+                                                <TextBox x:Name="LedgerOperatorNameBox" Width="160" Height="28"
+                                                         Margin="6,0,0,0" VerticalContentAlignment="Center" />
+                                                <Button x:Name="SaveOperatorButton" Height="28" Padding="10,0"
+                                                        Margin="16,0,0,0" Content="登记为介质处理人"
+                                                        Click="OnSaveOperatorClick" />
+                                            </StackPanel>
+                                            <TextBlock x:Name="LedgerOperatorHintText" FontSize="11" Foreground="#9CA3AF"
+                                                       TextWrapping="Wrap" Margin="0,6,0,0"
+                                                       Text="介质尚未登记处理人时，请在此填写并登记。" />
+                                        </StackPanel>
+                                    </Border>
+
+                                    <Border Style="{StaticResource CardBorder}" Margin="0,12,0,0">
+                                        <StackPanel>
+                                            <StackPanel Orientation="Horizontal">
+                                                <Button x:Name="FinishLedgerButton" Style="{StaticResource PrimaryButton}"
+                                                        Content="完成会话并产出报告" IsEnabled="False"
+                                                        Click="OnFinishSessionClick" />
+                                                <TextBlock Foreground="#9CA3AF" FontSize="11" Margin="12,0,0,0"
+                                                           VerticalAlignment="Center" TextWrapping="Wrap"
+                                                           Text="写入台账（不可修改）+ 静默产出脱敏报告（HTML + Markdown）到 U 盘 reports 目录；介质不可写时会阻止结束。" />
+                                            </StackPanel>
+                                            <TextBlock x:Name="LedgerFinishStatusText" FontSize="12" Foreground="#6B7280"
+                                                       TextWrapping="Wrap" Margin="0,8,0,0"
+                                                       Text="完成一次处理并确认结论后，记录会写入台账。" />
+                                            <TextBlock x:Name="LedgerReportResultText" FontSize="12" Foreground="#B45309"
+                                                       TextWrapping="Wrap" Margin="0,4,0,0" Visibility="Collapsed" />
+                                        </StackPanel>
+                                    </Border>
+                                </StackPanel>
+                            </ScrollViewer>
+                        </Grid>
+                    </TabItem>
+
+                    <!-- 目标机档案 -->
+                    <TabItem Header="目标机档案">
+                        <Grid Margin="0,4,0,0">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+                            <Border Grid.Row="0" Style="{StaticResource CardBorder}">
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource CardTitle}"
+                                               Text="目标机档案（本机历史记录，按处理时间倒序；可展开查看当时的诊断依据）" />
+                                    <TextBlock x:Name="MachineHistoryNoticeText" FontSize="12" Foreground="#1D4ED8"
+                                               TextWrapping="Wrap" Text="尚未加载台账。" />
+                                </StackPanel>
+                            </Border>
+                            <Border Grid.Row="1" Style="{StaticResource CardBorder}" Margin="0,12,0,0">
+                                <ListBox x:Name="MachineRecordList" BorderThickness="0"
+                                         ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border BorderBrush="#F3F4F6" BorderThickness="0,0,0,1" Padding="2,9">
+                                                <StackPanel>
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <Border CornerRadius="10" Padding="8,2" VerticalAlignment="Center"
+                                                                Background="{Binding Conclusion, Converter={StaticResource LedgerConclusionBrush}}">
+                                                            <TextBlock FontSize="11" Foreground="White" Text="{Binding ConclusionText}" />
+                                                        </Border>
+                                                        <TextBlock Text="{Binding HeaderText}" FontWeight="SemiBold" FontSize="13"
+                                                                   Margin="10,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap" />
+                                                    </StackPanel>
+                                                    <TextBlock Text="{Binding TimeText}" FontSize="11" Foreground="#6B7280"
+                                                               Margin="0,4,0,0" TextWrapping="Wrap" />
+                                                    <TextBlock Text="{Binding OperatorText}" FontSize="11" Foreground="#9CA3AF"
+                                                               Margin="0,1,0,0" TextWrapping="Wrap" />
+                                                    <TextBlock Text="{Binding TagText}" FontSize="11" Foreground="#9CA3AF"
+                                                               Margin="0,1,0,0" TextWrapping="Wrap"
+                                                               Visibility="{Binding HasTags, Converter={StaticResource BoolToVisibility}}" />
+                                                    <TextBlock Text="{Binding ActionSummaryText}" FontSize="12"
+                                                               Foreground="#374151" TextWrapping="Wrap" Margin="0,3,0,0" />
+                                                    <TextBlock Text="{Binding ConflictText}" FontSize="11" Foreground="#B91C1C"
+                                                               TextWrapping="Wrap" Margin="0,3,0,0"
+                                                               Visibility="{Binding IsConflict, Converter={StaticResource BoolToVisibility}}" />
+                                                    <ItemsControl ItemsSource="{Binding Actions}" Margin="0,4,0,0">
+                                                        <ItemsControl.ItemTemplate>
+                                                            <DataTemplate>
+                                                                <StackPanel Orientation="Horizontal" Margin="0,1">
+                                                                    <Border CornerRadius="10" Padding="7,1" VerticalAlignment="Center"
+                                                                            Background="{Binding Outcome, Converter={StaticResource ActionOutcomeBrush}}">
+                                                                        <TextBlock FontSize="10" Foreground="White" Text="{Binding OutcomeText}" />
+                                                                    </Border>
+                                                                    <TextBlock Text="{Binding ActionText}" FontSize="11"
+                                                                               Foreground="#374151" Margin="8,0,0,0" VerticalAlignment="Center" />
+                                                                    <TextBlock Text="{Binding DurationText}" FontSize="11"
+                                                                               Foreground="#9CA3AF" Margin="8,0,0,0" VerticalAlignment="Center" />
+                                                                </StackPanel>
+                                                            </DataTemplate>
+                                                        </ItemsControl.ItemTemplate>
+                                                    </ItemsControl>
+                                                    <Expander Header="查看当时的诊断依据" Margin="0,4,0,0"
+                                                              Visibility="{Binding HasDetail, Converter={StaticResource BoolToVisibility}}">
+                                                        <TextBlock Text="{Binding DetailText}" FontSize="11"
+                                                                   Foreground="#6B7280" TextWrapping="Wrap" />
+                                                    </Expander>
+                                                    <TextBlock Text="{Binding ReportName}" FontSize="11"
+                                                               Foreground="#9CA3AF" Margin="0,3,0,0" />
+                                                </StackPanel>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                            </Border>
+                        </Grid>
+                    </TabItem>
+
+                    <!-- 台账总览 -->
+                    <TabItem Header="台账总览">
+                        <Grid Margin="0,4,0,0">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+
+                            <Border Grid.Row="0" Style="{StaticResource CardBorder}">
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource CardTitle}"
+                                               Text="筛选与统计（离线本地，不引入图表依赖）" />
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="问题类别：" FontSize="12" Foreground="#6B7280"
+                                                   VerticalAlignment="Center" />
+                                        <ComboBox x:Name="LedgerFilterCategoryCombo" Width="150" Height="28"
+                                                  Margin="6,0,0,0" DisplayMemberPath="Text" />
+                                        <TextBlock Text="处理人工号：" FontSize="12" Foreground="#6B7280"
+                                                   VerticalAlignment="Center" Margin="16,0,0,0" />
+                                        <TextBox x:Name="LedgerFilterOperatorBox" Width="140" Height="28"
+                                                 Margin="6,0,0,0" VerticalContentAlignment="Center" />
+                                        <TextBlock Text="起始：" FontSize="12" Foreground="#6B7280"
+                                                   VerticalAlignment="Center" Margin="16,0,0,0" />
+                                        <DatePicker x:Name="LedgerFilterFromPicker" Width="130" Height="28" Margin="6,0,0,0" />
+                                        <TextBlock Text="结束：" FontSize="12" Foreground="#6B7280"
+                                                   VerticalAlignment="Center" Margin="12,0,0,0" />
+                                        <DatePicker x:Name="LedgerFilterToPicker" Width="130" Height="28" Margin="6,0,0,0" />
+                                        <Button x:Name="ApplyLedgerFilterButton" Height="28" Padding="12,0"
+                                                Margin="16,0,0,0" Content="应用筛选" Click="OnApplyLedgerFilterClick" />
+                                        <Button x:Name="ResetLedgerFilterButton" Height="28" Padding="12,0"
+                                                Margin="8,0,0,0" Content="重置" Click="OnResetLedgerFilterClick" />
+                                        <Button x:Name="ReloadLedgerButton" Height="28" Padding="12,0"
+                                                Margin="8,0,0,0" Content="重新加载台账" Click="OnReloadLedgerClick" />
+                                    </StackPanel>
+                                    <TextBlock x:Name="LedgerStatText" FontSize="12" FontWeight="SemiBold"
+                                               Foreground="#111827" TextWrapping="Wrap" Margin="0,10,0,0"
+                                               Text="台账为空。" />
+                                    <TextBlock x:Name="LedgerStatCategoryText" FontSize="12" Foreground="#6B7280"
+                                               TextWrapping="Wrap" Margin="0,2,0,0" />
+                                    <TextBlock x:Name="LedgerStatOperatorText" FontSize="12" Foreground="#6B7280"
+                                               TextWrapping="Wrap" Margin="0,2,0,0" />
+                                    <TextBlock x:Name="LedgerStatUnresolvedText" FontSize="12" Foreground="#B45309"
+                                               TextWrapping="Wrap" Margin="0,2,0,0" />
+                                    <TextBlock x:Name="LedgerConflictText" FontSize="12" Foreground="#B91C1C"
+                                               TextWrapping="Wrap" Margin="0,4,0,0" Visibility="Collapsed" />
+                                </StackPanel>
+                            </Border>
+
+                            <Border Grid.Row="1" Style="{StaticResource CardBorder}" Margin="0,12,0,0">
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource CardTitle}"
+                                               Text="导出（默认脱敏；范围与格式自选，默认保存到 reports 目录）" />
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="范围：" FontSize="12" Foreground="#6B7280"
+                                                   VerticalAlignment="Center" />
+                                        <ComboBox x:Name="LedgerExportScopeCombo" Width="180" Height="28"
+                                                  Margin="6,0,0,0" DisplayMemberPath="Text" />
+                                        <TextBlock Text="格式：" FontSize="12" Foreground="#6B7280"
+                                                   VerticalAlignment="Center" Margin="16,0,0,0" />
+                                        <ComboBox x:Name="LedgerExportFormatCombo" Width="120" Height="28"
+                                                  Margin="6,0,0,0" DisplayMemberPath="Text" />
+                                        <Button x:Name="ExportLedgerButton" Height="28" Padding="12,0"
+                                                Margin="16,0,0,0" Content="导出…" Click="OnExportLedgerClick" />
+                                        <TextBlock x:Name="LedgerExportStatusText" FontSize="12" Foreground="#6B7280"
+                                                   Margin="12,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+
+                            <Grid Grid.Row="2" Margin="0,12,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="420" />
+                                </Grid.ColumnDefinitions>
+                                <Border Grid.Column="0" Style="{StaticResource CardBorder}" Margin="0,0,12,0">
+                                    <DockPanel>
+                                        <TextBlock DockPanel.Dock="Top" Style="{StaticResource CardTitle}"
+                                                   Text="台账记录与机器列表（本 U 盘处理过的所有机器）" />
+                                        <ListBox x:Name="LedgerMachineList" BorderThickness="0"
+                                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                                 SelectionChanged="OnLedgerMachineSelectionChanged">
+                                            <ListBox.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Border BorderBrush="#F3F4F6" BorderThickness="0,0,0,1" Padding="2,8">
+                                                        <StackPanel>
+                                                            <StackPanel Orientation="Horizontal">
+                                                                <Border CornerRadius="10" Padding="8,2" VerticalAlignment="Center"
+                                                                        Background="{Binding LastConclusion, Converter={StaticResource LedgerConclusionBrush}}">
+                                                                    <TextBlock FontSize="11" Foreground="White"
+                                                                               Text="{Binding LastConclusionText}" />
+                                                                </Border>
+                                                                <TextBlock Text="{Binding HeaderText}" FontWeight="SemiBold"
+                                                                           FontSize="13" Margin="10,0,0,0" VerticalAlignment="Center"
+                                                                           TextWrapping="Wrap" />
+                                                            </StackPanel>
+                                                            <TextBlock Text="{Binding SummaryText}" FontSize="11"
+                                                                       Foreground="#6B7280" Margin="0,3,0,0" TextWrapping="Wrap" />
+                                                        </StackPanel>
+                                                    </Border>
+                                                </DataTemplate>
+                                            </ListBox.ItemTemplate>
+                                        </ListBox>
+                                    </DockPanel>
+                                </Border>
+
+                                <Grid Grid.Column="1">
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="*" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+                                    <Border Grid.Row="0" Style="{StaticResource CardBorder}">
+                                        <DockPanel>
+                                            <TextBlock DockPanel.Dock="Top" Style="{StaticResource CardTitle}"
+                                                       Text="选中机器的记录（按处理时间倒序）" />
+                                            <ListBox x:Name="LedgerRecordList" BorderThickness="0"
+                                                     ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                                                <ListBox.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <Border BorderBrush="#F3F4F6" BorderThickness="0,0,0,1" Padding="2,7">
+                                                            <StackPanel>
+                                                                <StackPanel Orientation="Horizontal">
+                                                                    <Border CornerRadius="10" Padding="7,2" VerticalAlignment="Center"
+                                                                            Background="{Binding Conclusion, Converter={StaticResource LedgerConclusionBrush}}">
+                                                                        <TextBlock FontSize="10" Foreground="White"
+                                                                                   Text="{Binding ConclusionText}" />
+                                                                    </Border>
+                                                                    <TextBlock Text="{Binding CategoryText}" FontWeight="SemiBold"
+                                                                               FontSize="12" Margin="8,0,0,0" VerticalAlignment="Center" />
+                                                                </StackPanel>
+                                                                <TextBlock Text="{Binding TimeText}" FontSize="11"
+                                                                           Foreground="#9CA3AF" Margin="0,2,0,0" TextWrapping="Wrap" />
+                                                                <TextBlock Text="{Binding OperatorText}" FontSize="11"
+                                                                           Foreground="#9CA3AF" Margin="0,1,0,0" TextWrapping="Wrap" />
+                                                            </StackPanel>
+                                                        </Border>
+                                                    </DataTemplate>
+                                                </ListBox.ItemTemplate>
+                                            </ListBox>
+                                        </DockPanel>
+                                    </Border>
+
+                                    <Border Grid.Row="1" Style="{StaticResource CardBorder}" Margin="0,12,0,0">
+                                        <DockPanel>
+                                            <TextBlock DockPanel.Dock="Top" Style="{StaticResource CardTitle}"
+                                                       Text="报告查看器（reports 目录，可离线打开）" />
+                                            <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,6">
+                                                <Button x:Name="OpenReportButton" Height="28" Padding="12,0"
+                                                        Content="用浏览器打开" Click="OnOpenReportClick" />
+                                                <Button x:Name="OpenReportFolderButton" Height="28" Padding="12,0"
+                                                        Margin="8,0,0,0" Content="打开所在文件夹" Click="OnOpenReportFolderClick" />
+                                                <Button x:Name="RefreshReportsButton" Height="28" Padding="12,0"
+                                                        Margin="8,0,0,0" Content="刷新列表" Click="OnRefreshReportsClick" />
+                                            </StackPanel>
+                                            <ListBox x:Name="LedgerReportList" Height="150" BorderThickness="0"
+                                                     ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                                                <ListBox.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <Border BorderBrush="#F3F4F6" BorderThickness="0,0,0,1" Padding="2,6">
+                                                            <StackPanel>
+                                                                <TextBlock Text="{Binding FileName}" FontSize="12"
+                                                                           FontWeight="SemiBold" TextWrapping="Wrap"
+                                                                           ToolTip="{Binding FullPath}" />
+                                                                <TextBlock Text="{Binding SizeText}" FontSize="11"
+                                                                           Foreground="#9CA3AF" />
+                                                                <TextBlock Text="{Binding TimeText}" FontSize="11"
+                                                                           Foreground="#9CA3AF" />
+                                                            </StackPanel>
+                                                        </Border>
+                                                    </DataTemplate>
+                                                </ListBox.ItemTemplate>
+                                            </ListBox>
+                                        </DockPanel>
+                                    </Border>
+                                </Grid>
+                            </Grid>
+                        </Grid>
+                    </TabItem>
+                </TabControl>
             </TabItem>
         </TabControl>
 
