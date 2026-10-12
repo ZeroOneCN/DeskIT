@@ -1,6 +1,6 @@
 # TASK_DeskIT —— 原子任务分解（步骤 2 ~ 步骤 9）
 
-> 步骤 1（工程骨架）、步骤 2（M1 便携启动）与步骤 3（M2 设备识别与信息采集）已完成。以下每个步骤**独立可编译、可测试**，且**每步一次提交并推送 master**，提交信息使用中文。
+> 步骤 1（工程骨架）、步骤 2（M1 便携启动）、步骤 3（M2 设备识别与信息采集）与步骤 4（M3 问题诊断）已完成。以下每个步骤**独立可编译、可测试**，且**每步一次提交并推送 master**，提交信息使用中文。
 
 ## 步骤 2 —— M1 便携启动与运行环境（已完成）
 - **目标**：实现启动自检（程序哈希、数据目录可读写、可用空间、系统版本、当前权限、实例互斥）与提权/只读回退。
@@ -16,11 +16,13 @@
 - **实际落地**：Core 新增 `CollectionModels.cs` / `CollectionRules.cs` / `MachineIdentityRules.cs`（分组、字段状态四类归因、快照保留 5 份、标识回退与档案归并，共补 15 项单测）；Windows 新增 `WmiQuery.cs` / `WindowsProbes.cs` / `WindowsCollectionItems.cs`（7 组只读采集：WMI、注册表、网络接口、卷信息、固定参数 netsh 查询）/ `DeviceInfoCollector.cs`（分组并行 + 组内串行 + 单项超时）/ `SnapshotStore.cs`（`data\snapshots\<机器>\`）/ `DeviceCollectionService.cs`；App 新增“设备信息采集（M2）”页。
 - **实测**：本机基础采集 5.9 秒，29 个采集项全部执行；序列号为占位串时正确回退为“主机名 + 首次采集时间”；连续 7 次采集归并同一档案且档案内快照恰为 5 份。
 
-## 步骤 4 —— M3 问题诊断
+## 步骤 4 —— M3 问题诊断（已完成）
 - **目标**：场景化诊断项，输出 正常/异常/提示/未知 四态；无法判定记“未知”。
 - **产出**：规则化诊断项与引擎；诊断会话状态机接线。
 - **验收要点**：每个诊断项可独立执行；结论只落在四态内；采集与诊断期间界面保持可操作。
 - **依赖**：步骤 3（采集数据）、Core 诊断结论/状态机。
+- **实际落地**：Core 新增 `DiagnosisModels.cs` / `DiagnosisRules.cs`（诊断结论四态、场景/会话模型、异常置顶排序、四态统计、会话标识、文案）与 `SessionStateRules.cs`（终态封闭、合法迁移、结论映射，共补 12 项单测）；Windows 新增 `PowerShell51Executor.cs`（PS 5.1 `-EncodedCommand` + 200 行截断 + 整进程树超时终止）、`WindowsDiagnosisItems.cs`（7 场景 38 个只读诊断项）/ `ProblemDiagnoser.cs`（场景并行 + 场景内串行 + 单项独立超时 + 只读提权项标记未执行）/ `DiagnosisStore.cs`（`data\sessions\<会话>.json`）/ `ProblemDiagnosisService.cs`（新建 → 诊断中 → 已结束 状态机接线）；App 新增“问题诊断（M3）”页。
+- **实测**：本机全场景诊断 17.9 秒，38 个诊断项全部执行、2 项因只读标记未执行；异常置顶排序、四态统计与会话落盘均正确（会话文件 `data\sessions\sess-*.json` 生成）。修复了 `software.unresponsive` 使用不存在的 `Win32_Process.Responding` 导致的无效查询（改用 PowerShell `Get-Process.Responding`），并修正命令行工具输出解码（按 OEM 代码页解码，避免 `powercfg` / `net accounts` 中文输出乱码）。
 
 ## 步骤 5 —— M4 修复动作库
 - **目标**：声明式动作定义（风险级别、需重启、可回滚、前置条件、脚本入口）与统一执行器。

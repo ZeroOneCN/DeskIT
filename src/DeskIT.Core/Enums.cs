@@ -88,6 +88,44 @@ public enum SessionState
     Interrupted = 8
 }
 
+/// <summary>问题场景（PRD M3 首批 7 个场景），诊断项按场景组织。</summary>
+public enum DiagnosisScene
+{
+    /// <summary>卡慢：CPU/内存/磁盘占用、启动项、电源计划等。</summary>
+    Slowness = 0,
+
+    /// <summary>网络：网卡、IP/DHCP、DNS、网关连通性、代理、VPN 残留。</summary>
+    Network = 1,
+
+    /// <summary>打印与共享：后台处理服务、打印队列、脱机打印机、共享映射与服务。</summary>
+    PrintingSharing = 2,
+
+    /// <summary>磁盘与存储：分区可用空间、空间增长趋势、临时文件、回收站、磁盘错误日志。</summary>
+    DiskStorage = 3,
+
+    /// <summary>启动与系统：开机耗时、计划任务、异常关机与蓝屏、驱动异常设备、系统还原。</summary>
+    StartupSystem = 4,
+
+    /// <summary>软件：无响应进程、同功能多版本冲突、最近安装时间线、软件残留目录。</summary>
+    Software = 5,
+
+    /// <summary>账号与权限：账号锁定、密码策略、管理员组成员、UAC、共享凭据、机器时间。</summary>
+    AccountPrivilege = 6
+}
+
+/// <summary>诊断项的执行状态。四态结论表示“看到了什么”，执行状态表示“是否真的执行了”。</summary>
+public enum DiagnosisExecutionStatus
+{
+    /// <summary>已执行：诊断项已实际运行并给出四态结论之一。</summary>
+    Executed = 0,
+
+    /// <summary>未执行（需要管理员权限）：只读模式下跳过，不计入异常统计。</summary>
+    SkippedNeedsAdministrator = 1,
+
+    /// <summary>不适用：诊断项对目标系统版本或对象不适用，不计入异常与未知统计。</summary>
+    NotApplicable = 2
+}
+
 /// <summary>会话结束时的结论倾向。</summary>
 public enum SessionConclusion
 {

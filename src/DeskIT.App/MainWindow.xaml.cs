@@ -28,6 +28,10 @@ public partial class MainWindow : Window
     private CancellationTokenSource? _collectionCancellation;
     private bool _collecting;
 
+    private readonly IProblemDiagnosisService _diagnosisService = new ProblemDiagnosisService();
+    private CancellationTokenSource? _diagnosisCancellation;
+    private bool _diagnosing;
+
     private PrivilegeLevel _privilege;
     private bool _advancedModeEnabled;
     private StartupVerdict? _verdict;
@@ -74,6 +78,7 @@ public partial class MainWindow : Window
     {
         _guard.ActivationRequested -= OnActivationRequested;
         _collectionCancellation?.Cancel();
+        _diagnosisCancellation?.Cancel();
     }
 
     /// <summary>收到其他实例的激活请求：恢复并前置窗口，并提示已存在的实例。</summary>
@@ -193,6 +198,21 @@ public partial class MainWindow : Window
                 : "启动自检未通过，暂不能采集设备信息。";
         }
 
+        // 问题诊断入口（M3）：任何模式均可诊断；仅当“不再开始新会话”（空间 <200 MB）或启动被阻止时禁用。
+        var canDiagnose = verdict.CanStart && capabilities.CanDiagnose && capabilities.CanStartNewSession;
+        DiagnoseSceneButton.IsEnabled = canDiagnose;
+        DiagnoseAllButton.IsEnabled = canDiagnose;
+        if (!canDiagnose)
+        {
+            DiagnosisProgressText.Text = verdict.CanStart
+                ? "介质可用空间低于 200 MB：已停止开始新的诊断会话，请先归档或更换介质。"
+                : "启动自检未通过，暂不能进行问题诊断。";
+        }
+        else if (!_diagnosing && DiagnosisSessionText.Text == "尚未诊断。")
+        {
+            DiagnosisProgressText.Text = "诊断项可在列表中出现异常时持续刷新；异常与提示项始终置顶显示。";
+        }
+
         // 高级模式开关
         AdvancedButton.IsEnabled = verdict.IsAdministrator && verdict.CanStart;
         AdvancedButton.Content = _advancedModeEnabled ? "关闭高级模式" : "开启高级模式";
@@ -234,6 +254,8 @@ public partial class MainWindow : Window
             AdvancedButton.IsEnabled = false;
             CollectBasicButton.IsEnabled = false;
             CollectFullButton.IsEnabled = false;
+            DiagnoseSceneButton.IsEnabled = false;
+            DiagnoseAllButton.IsEnabled = false;
         }
     }
 
@@ -505,5 +527,213 @@ public partial class MainWindow : Window
         IncludeAccountCheck.IsEnabled = !busy;
         IncludeSoftwareCheck.IsEnabled = !busy;
         IncludeSecurityCheck.IsEnabled = !busy;
+    }
+
+    /// <summary>点击“诊断勾选场景”：仅诊断界面勾选的场景。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private async void OnDiagnoseSceneClick(object sender, RoutedEventArgs e)
+        => await RunDiagnosisAsync(allScenes: false);
+
+    /// <summary>点击“全场景诊断”：按展示顺序诊断全部 7 个场景。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private async void OnDiagnoseAllClick(object sender, RoutedEventArgs e)
+        => await RunDiagnosisAsync(allScenes: true);
+
+    /// <summary>点击“中止诊断”：终止本次诊断；为保证会话完整，本次结果不写入 U 盘。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private void OnCancelDiagnoseClick(object sender, RoutedEventArgs e)
+    {
+        _diagnosisCancellation?.Cancel();
+        DiagnosisProgressText.Text = "正在中止诊断…";
+    }
+
+    /// <summary>
+    /// 执行一次问题诊断并写入会话记录。
+    /// </summary>
+    /// <param name="allScenes">是否执行全场景诊断。</param>
+    /// <returns>无返回值的异步任务。</returns>
+    private async Task RunDiagnosisAsync(bool allScenes)
+    {
+        if (_diagnosing)
+        {
+            return;
+        }
+
+        if (_verdict is null || !_verdict.CanStart)
+        {
+            MessageBox.Show(this, "启动自检未通过，暂不能进行问题诊断。", "DeskIT", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        if (!_verdict.Capabilities.CanStartNewSession)
+        {
+            MessageBox.Show(
+                this,
+                "介质可用空间低于 200 MB，已停止开始新的诊断会话。请先归档报告与台账，或更换介质。",
+                "DeskIT",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
+        var scenes = DiagnosisRules.SelectScenes(allScenes, BuildSelectedScenes());
+        if (scenes.Count == 0)
+        {
+            MessageBox.Show(
+                this,
+                "请至少勾选一个诊断场景，或直接使用“全场景诊断”。",
+                "DeskIT",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        _diagnosing = true;
+        SetDiagnosingBusy(true);
+        DiagnosisFindingList.ItemsSource = null;
+        DiagnoseProgressBar.Value = 0;
+        DiagnosisSessionText.Text = "正在诊断…";
+        DiagnosisProgressText.Text =
+            $"即将诊断 {scenes.Count} 个场景（全部为只读检查，需管理员的项将标记为未执行）。";
+
+        var request = new DiagnosisRequest(scenes, _privilege, DiagnosisRules.DefaultItemTimeout, _dataDirectory);
+        var progress = new Progress<DiagnosisProgress>(OnDiagnosisProgress);
+
+        _diagnosisCancellation = new CancellationTokenSource();
+
+        try
+        {
+            var outcome = await _diagnosisService.DiagnoseAndStoreAsync(
+                _dataDirectory,
+                request,
+                progress,
+                _diagnosisCancellation.Token);
+
+            RenderDiagnosis(outcome);
+        }
+        catch (OperationCanceledException)
+        {
+            DiagnosisSessionText.Text = "已中止诊断。";
+            DiagnosisProgressText.Text = "已中止诊断，本次结果未写入会话记录。";
+        }
+        catch (Exception ex)
+        {
+            DiagnosisSessionText.Text = "诊断失败。";
+            DiagnosisProgressText.Text = "诊断失败，未能写入会话记录。";
+            MessageBox.Show(this, $"问题诊断失败：{ex.Message}", "DeskIT", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            _diagnosing = false;
+            _diagnosisCancellation?.Dispose();
+            _diagnosisCancellation = null;
+            SetDiagnosingBusy(false);
+        }
+    }
+
+    /// <summary>汇总界面上被勾选的诊断场景（取消勾选即不诊断该场景）。</summary>
+    /// <returns>被勾选的场景集合。</returns>
+    private IReadOnlySet<DiagnosisScene> BuildSelectedScenes()
+    {
+        var selected = new HashSet<DiagnosisScene>();
+        AddIfChecked(DiagSceneSlownessCheck, DiagnosisScene.Slowness, selected);
+        AddIfChecked(DiagSceneNetworkCheck, DiagnosisScene.Network, selected);
+        AddIfChecked(DiagScenePrintingCheck, DiagnosisScene.PrintingSharing, selected);
+        AddIfChecked(DiagSceneDiskCheck, DiagnosisScene.DiskStorage, selected);
+        AddIfChecked(DiagSceneStartupCheck, DiagnosisScene.StartupSystem, selected);
+        AddIfChecked(DiagSceneSoftwareCheck, DiagnosisScene.Software, selected);
+        AddIfChecked(DiagSceneAccountCheck, DiagnosisScene.AccountPrivilege, selected);
+        return selected;
+    }
+
+    /// <summary>勾选框为选中时把对应场景加入集合。</summary>
+    /// <param name="box">场景勾选框。</param>
+    /// <param name="scene">对应场景。</param>
+    /// <param name="target">目标集合。</param>
+    private static void AddIfChecked(System.Windows.Controls.CheckBox box, DiagnosisScene scene, ISet<DiagnosisScene> target)
+    {
+        if (box.IsChecked == true)
+        {
+            target.Add(scene);
+        }
+    }
+
+    /// <summary>上报诊断进度（以诊断项为单位）。</summary>
+    /// <param name="progress">进度信息。</param>
+    private void OnDiagnosisProgress(DiagnosisProgress progress)
+    {
+        DiagnosisProgressText.Text =
+            $"诊断中：{DiagnosisRules.DescribeScene(progress.Scene)} · {progress.ItemName}（{progress.CompletedItems}/{progress.TotalItems}）";
+        DiagnoseProgressBar.Value = progress.TotalItems == 0
+            ? 0
+            : progress.CompletedItems * 100.0 / progress.TotalItems;
+    }
+
+    /// <summary>
+    /// 渲染诊断结果：结论按“异常置顶”排序展示，并给出会话标识、状态与统计摘要。
+    /// </summary>
+    /// <param name="outcome">诊断与入库结果。</param>
+    private void RenderDiagnosis(ProblemDiagnosisOutcome outcome)
+    {
+        var report = outcome.Report;
+        var summary = report.Summary;
+
+        DiagnosisFindingList.ItemsSource = DiagnosisRules.SortFindings(report.AllFindings)
+            .Select(BuildFindingView)
+            .ToList();
+
+        DiagnosisSessionText.Text =
+            $"会话 {outcome.Session.SessionId} · 状态：{SessionStateRules.Describe(outcome.Session.State)} · " +
+            DiagnosisRules.DescribeSummary(summary);
+        DiagnosisProgressText.Text =
+            $"诊断完成：{report.Scenes.Count} 个场景、{summary.TotalCount} 个诊断项，耗时 {report.FinishedAt - report.StartedAt:hh\\:mm\\:ss}。";
+        DiagnoseProgressBar.Value = 100;
+    }
+
+    /// <summary>把诊断结论转换为界面视图。</summary>
+    /// <param name="finding">诊断结论。</param>
+    /// <returns>供列表与详情面板绑定的视图对象。</returns>
+    private static DiagnosisFindingView BuildFindingView(DiagnosisFinding finding)
+    {
+        var sceneName = DiagnosisRules.DescribeScene(finding.Scene);
+        var evidence = finding.Evidence
+            .Select(item => new DiagnosisEvidenceView(item.Label, string.IsNullOrWhiteSpace(item.Value) ? "（无）" : item.Value!))
+            .ToList();
+        var actions = finding.SuggestedActionIds.Count == 0
+            ? "暂无建议动作（修复动作库 M4 落地后补充）。"
+            : string.Join("、", finding.SuggestedActionIds);
+
+        return new DiagnosisFindingView(
+            finding.FindingId,
+            sceneName,
+            finding.Name,
+            finding.Conclusion,
+            DiagnosisRules.DescribeConclusion(finding.Conclusion),
+            DiagnosisRules.DescribeStatus(finding.Status),
+            finding.Reason,
+            $"耗时 {finding.Elapsed.TotalSeconds:0.0} 秒",
+            evidence,
+            actions,
+            $"{sceneName} · {finding.Name}",
+            finding.Status == DiagnosisExecutionStatus.SkippedNeedsAdministrator);
+    }
+
+    /// <summary>切换诊断忙碌态（诊断期间禁用触发与场景勾选，启用中止按钮）。</summary>
+    /// <param name="busy">是否正在诊断。</param>
+    private void SetDiagnosingBusy(bool busy)
+    {
+        DiagnoseSceneButton.IsEnabled = !busy;
+        DiagnoseAllButton.IsEnabled = !busy;
+        CancelDiagnoseButton.IsEnabled = busy;
+        DiagSceneSlownessCheck.IsEnabled = !busy;
+        DiagSceneNetworkCheck.IsEnabled = !busy;
+        DiagScenePrintingCheck.IsEnabled = !busy;
+        DiagSceneDiskCheck.IsEnabled = !busy;
+        DiagSceneStartupCheck.IsEnabled = !busy;
+        DiagSceneSoftwareCheck.IsEnabled = !busy;
+        DiagSceneAccountCheck.IsEnabled = !busy;
     }
 }

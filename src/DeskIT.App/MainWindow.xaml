@@ -13,6 +13,8 @@
         <local:SelfCheckOutcomeToBrushConverter x:Key="OutcomeBrush" />
         <local:SelfCheckOutcomeToTextConverter x:Key="OutcomeText" />
         <local:CollectionGroupStatusToBrushConverter x:Key="GroupStatusBrush" />
+        <local:DiagnosisConclusionToBrushConverter x:Key="ConclusionBrush" />
+        <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
 
         <Style x:Key="CardBorder" TargetType="Border">
             <Setter Property="Background" Value="White" />
@@ -279,6 +281,175 @@
                             </ScrollViewer>
                         </DockPanel>
                     </Border>
+                </Grid>
+            </TabItem>
+
+            <!-- ============ M3 问题诊断 ============ -->
+            <TabItem Header="问题诊断（M3）">
+                <Grid Margin="0,4,0,0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <!-- 诊断范围与触发 -->
+                    <Border Grid.Row="0" Style="{StaticResource CardBorder}">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource CardTitle}"
+                                       Text="诊断场景与触发（全部为只读检查，不向目标机磁盘写入任何产物）" />
+                            <WrapPanel>
+                                <CheckBox x:Name="DiagSceneSlownessCheck" Content="卡慢" IsChecked="True"
+                                          Margin="0,0,16,0" VerticalAlignment="Center" />
+                                <CheckBox x:Name="DiagSceneNetworkCheck" Content="网络" IsChecked="True"
+                                          Margin="0,0,16,0" VerticalAlignment="Center" />
+                                <CheckBox x:Name="DiagScenePrintingCheck" Content="打印与共享" IsChecked="True"
+                                          Margin="0,0,16,0" VerticalAlignment="Center" />
+                                <CheckBox x:Name="DiagSceneDiskCheck" Content="磁盘与存储" IsChecked="True"
+                                          Margin="0,0,16,0" VerticalAlignment="Center" />
+                                <CheckBox x:Name="DiagSceneStartupCheck" Content="启动与系统" IsChecked="True"
+                                          Margin="0,0,16,0" VerticalAlignment="Center" />
+                                <CheckBox x:Name="DiagSceneSoftwareCheck" Content="软件" IsChecked="True"
+                                          Margin="0,0,16,0" VerticalAlignment="Center" />
+                                <CheckBox x:Name="DiagSceneAccountCheck" Content="账号与权限" IsChecked="True"
+                                          Margin="0,0,16,0" VerticalAlignment="Center" />
+                            </WrapPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                                <Button x:Name="DiagnoseSceneButton" Style="{StaticResource PrimaryButton}"
+                                        Content="诊断勾选场景" Click="OnDiagnoseSceneClick" />
+                                <Button x:Name="DiagnoseAllButton" Style="{StaticResource PrimaryButton}" Margin="8,0,0,0"
+                                        Content="全场景诊断" Click="OnDiagnoseAllClick" />
+                                <Button x:Name="CancelDiagnoseButton" Height="34" Padding="14,0" Margin="8,0,0,0"
+                                        Content="中止诊断" IsEnabled="False" Click="OnCancelDiagnoseClick" />
+                                <TextBlock Foreground="#9CA3AF" FontSize="11" Margin="14,0,0,0" VerticalAlignment="Center"
+                                           TextWrapping="Wrap"
+                                           Text="只读模式下，需管理员的诊断项标记“未执行（需要管理员权限）”，不计入异常。" />
+                            </StackPanel>
+                            <ProgressBar x:Name="DiagnoseProgressBar" Height="6" Margin="0,12,0,6"
+                                         Minimum="0" Maximum="100" Value="0" />
+                            <TextBlock x:Name="DiagnosisSessionText" FontSize="12" FontWeight="SemiBold"
+                                       Foreground="#111827" TextWrapping="Wrap" Text="尚未诊断。" />
+                            <TextBlock x:Name="DiagnosisProgressText" FontSize="12" Foreground="#6B7280"
+                                       TextWrapping="Wrap" Margin="0,2,0,0"
+                                       Text="诊断项可在列表中出现异常时持续刷新；异常与提示项始终置顶显示。" />
+                        </StackPanel>
+                    </Border>
+
+                    <!-- 结论列表与详情 -->
+                    <Grid Grid.Row="1" Margin="0,12,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="420" />
+                        </Grid.ColumnDefinitions>
+
+                        <Border Grid.Column="0" Style="{StaticResource CardBorder}" Margin="0,0,14,0">
+                            <DockPanel>
+                                <TextBlock DockPanel.Dock="Top" Style="{StaticResource CardTitle}"
+                                           Text="诊断结论（异常置顶）" />
+                                <ListBox x:Name="DiagnosisFindingList" BorderThickness="0"
+                                         ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <Grid Margin="0,3">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
+                                                <Border Grid.Column="0" VerticalAlignment="Top" CornerRadius="10"
+                                                        Padding="9,3" Margin="0,0,10,0"
+                                                        Background="{Binding Conclusion, Converter={StaticResource ConclusionBrush}}">
+                                                    <TextBlock FontSize="11" Foreground="White" Text="{Binding ConclusionText}" />
+                                                </Border>
+                                                <StackPanel Grid.Column="1">
+                                                    <TextBlock Text="{Binding HeaderText}" FontWeight="SemiBold"
+                                                               FontSize="13" TextWrapping="Wrap" />
+                                                    <TextBlock Text="{Binding Reason}" Foreground="#6B7280" FontSize="12"
+                                                               TextWrapping="Wrap" Margin="0,2,0,0" />
+                                                </StackPanel>
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                            </DockPanel>
+                        </Border>
+
+                        <Border Grid.Column="1" Style="{StaticResource CardBorder}"
+                                DataContext="{Binding SelectedItem, ElementName=DiagnosisFindingList}">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel>
+                                    <TextBlock Style="{StaticResource CardTitle}" Text="结论详情" />
+                                    <TextBlock Text="请在上方列表中选择一项诊断结论，查看依据与建议。"
+                                               Foreground="#9CA3AF" FontSize="12" TextWrapping="Wrap">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Visibility" Value="Collapsed" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding}" Value="{x:Null}">
+                                                        <Setter Property="Visibility" Value="Visible" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+
+                                    <StackPanel>
+                                        <StackPanel.Style>
+                                            <Style TargetType="StackPanel">
+                                                <Setter Property="Visibility" Value="Visible" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding}" Value="{x:Null}">
+                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </StackPanel.Style>
+
+                                        <TextBlock Text="{Binding HeaderText}" FontSize="15" FontWeight="SemiBold"
+                                                   Foreground="#111827" TextWrapping="Wrap" />
+                                        <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                            <Border CornerRadius="10" Padding="9,3"
+                                                    Background="{Binding Conclusion, Converter={StaticResource ConclusionBrush}}">
+                                                <TextBlock FontSize="11" Foreground="White" Text="{Binding ConclusionText}" />
+                                            </Border>
+                                            <TextBlock Text="{Binding StatusText}" FontSize="11" Foreground="#6B7280"
+                                                       Margin="10,0,0,0" VerticalAlignment="Center" />
+                                            <TextBlock Text="{Binding ElapsedText}" FontSize="11" Foreground="#9CA3AF"
+                                                       Margin="10,0,0,0" VerticalAlignment="Center" />
+                                        </StackPanel>
+
+                                        <TextBlock Text="{Binding Reason}" FontSize="12" Foreground="#374151"
+                                                   TextWrapping="Wrap" Margin="0,10,0,0" />
+
+                                        <TextBlock Text="原始依据" Style="{StaticResource CardTitle}" Margin="0,12,0,6" />
+                                        <ItemsControl ItemsSource="{Binding Evidence}">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Grid Margin="0,2">
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="170" />
+                                                            <ColumnDefinition Width="*" />
+                                                        </Grid.ColumnDefinitions>
+                                                        <TextBlock Grid.Column="0" Style="{StaticResource FieldName}"
+                                                                   Text="{Binding Label}" Margin="0,0,10,0" />
+                                                        <TextBlock Grid.Column="1" Style="{StaticResource FieldValue}"
+                                                                   Text="{Binding Display}" />
+                                                    </Grid>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+
+                                        <TextBlock Text="建议动作（M4 落地，需显式勾选才执行）"
+                                                   Style="{StaticResource CardTitle}" Margin="0,12,0,6" />
+                                        <TextBlock Text="{Binding SuggestedActionsText}" FontSize="12"
+                                                   Foreground="#374151" TextWrapping="Wrap" />
+
+                                        <TextBlock Text="该项需要管理员权限，当前只读模式未执行；以管理员身份重新启动后可执行。"
+                                                   FontSize="12" Foreground="#B45309" TextWrapping="Wrap" Margin="0,10,0,0"
+                                                   Visibility="{Binding ShowAdminHint, Converter={StaticResource BoolToVisibility}}" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </ScrollViewer>
+                        </Border>
+                    </Grid>
                 </Grid>
             </TabItem>
         </TabControl>

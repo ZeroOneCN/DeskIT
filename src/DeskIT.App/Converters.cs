@@ -98,3 +98,37 @@ public sealed class SelfCheckOutcomeToTextConverter : IValueConverter
     public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
         => throw new NotSupportedException();
 }
+
+/// <summary>把诊断结论四态转换为徽标背景色。</summary>
+public sealed class DiagnosisConclusionToBrushConverter : IValueConverter
+{
+    private static readonly SolidColorBrush AbnormalBrush = new(Color.FromRgb(0xDC, 0x26, 0x26));
+    private static readonly SolidColorBrush HintBrush = new(Color.FromRgb(0xD9, 0x77, 0x06));
+    private static readonly SolidColorBrush UnknownBrush = new(Color.FromRgb(0x7C, 0x3A, 0xED));
+    private static readonly SolidColorBrush NormalBrush = new(Color.FromRgb(0x16, 0xA3, 0x4A));
+
+    /// <summary>按诊断结论返回背景色：异常=红、提示=橙、未知=紫、正常=绿。</summary>
+    /// <param name="value">DiagnosisConclusion 值。</param>
+    /// <param name="targetType">目标类型。</param>
+    /// <param name="parameter">未使用。</param>
+    /// <param name="culture">区域信息。</param>
+    /// <returns>对应的画刷。</returns>
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        => value switch
+        {
+            DiagnosisConclusion.Abnormal => AbnormalBrush,
+            DiagnosisConclusion.Hint => HintBrush,
+            DiagnosisConclusion.Unknown => UnknownBrush,
+            DiagnosisConclusion.Normal => NormalBrush,
+            _ => UnknownBrush
+        };
+
+    /// <summary>不支持反向转换。</summary>
+    /// <param name="value">值。</param>
+    /// <param name="targetType">目标类型。</param>
+    /// <param name="parameter">参数。</param>
+    /// <param name="culture">区域信息。</param>
+    /// <returns>不返回。</returns>
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}

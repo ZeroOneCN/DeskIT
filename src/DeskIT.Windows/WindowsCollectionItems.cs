@@ -663,7 +663,7 @@ internal static class WindowsCollectionItems
     /// <summary>网络接口操作状态的中文说明。</summary>
     /// <param name="status">网络接口状态。</param>
     /// <returns>中文说明。</returns>
-    private static string StatusText(OperationalStatus status) => status switch
+    internal static string StatusText(OperationalStatus status) => status switch
     {
         OperationalStatus.Up => "已连接",
         OperationalStatus.Down => "已断开",
@@ -676,7 +676,7 @@ internal static class WindowsCollectionItems
     /// <summary>判断名称或描述是否含 VPN 关键字。</summary>
     /// <param name="text">名称或描述。</param>
     /// <returns>含 VPN 关键字返回 true。</returns>
-    private static bool ContainsVpnKeyword(string text)
+    internal static bool ContainsVpnKeyword(string text)
     {
         if (string.IsNullOrWhiteSpace(text))
         {
@@ -689,7 +689,7 @@ internal static class WindowsCollectionItems
 
     /// <summary>安全地枚举网络接口；查询异常时按空集合处理，不中断整个分组。</summary>
     /// <returns>网络接口列表。</returns>
-    private static IReadOnlyList<NetworkInterface> SafeNetworkInterfaces()
+    internal static IReadOnlyList<NetworkInterface> SafeNetworkInterfaces()
     {
         try
         {
@@ -724,7 +724,7 @@ internal static class WindowsCollectionItems
     /// 仅读取名称、版本、发布者、安装日期与安装位置，不读取任何个人数据。
     /// </summary>
     /// <returns>已安装软件条目（已去重）。</returns>
-    private static IReadOnlyList<SoftwareEntry> EnumerateInstalledSoftware()
+    internal static IReadOnlyList<SoftwareEntry> EnumerateInstalledSoftware()
     {
         var results = new List<SoftwareEntry>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -785,7 +785,7 @@ internal static class WindowsCollectionItems
     /// <param name="Publisher">发布者。</param>
     /// <param name="InstallDate">安装日期。</param>
     /// <param name="InstallLocation">安装位置。</param>
-    private sealed record SoftwareEntry(
+    internal sealed record SoftwareEntry(
         string Name,
         string? Version,
         string? Publisher,

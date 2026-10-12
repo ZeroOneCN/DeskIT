@@ -30,6 +30,14 @@ public interface ISnapshotStore
     MachineProfile? LoadProfile(string dataDirectory, string machineId);
 
     /// <summary>
+    /// 读取指定机器的全部保留快照（按采集时间由旧到新），用于诊断中的空间增长趋势比较。
+    /// </summary>
+    /// <param name="dataDirectory">U 盘数据目录。</param>
+    /// <param name="machineId">机器标识。</param>
+    /// <returns>快照列表；无历史时返回空列表。</returns>
+    IReadOnlyList<MachineSnapshot> LoadSnapshots(string dataDirectory, string machineId);
+
+    /// <summary>
     /// 保存一次采集结果：写入快照文件与档案，并按保留上限清理最旧的快照。
     /// </summary>
     /// <param name="dataDirectory">U 盘数据目录。</param>
@@ -78,6 +86,38 @@ public sealed class SnapshotStore : ISnapshotStore
     {
         var path = Path.Combine(GetRoot(dataDirectory), BuildMachineKey(machineId), ProfileFileName);
         return TryReadProfile(path);
+    }
+
+    /// <inheritdoc />
+    public IReadOnlyList<MachineSnapshot> LoadSnapshots(string dataDirectory, string machineId)
+    {
+        var directory = Path.Combine(GetRoot(dataDirectory), BuildMachineKey(machineId));
+        if (!Directory.Exists(directory))
+        {
+            return Array.Empty<MachineSnapshot>();
+        }
+
+        var snapshots = new List<MachineSnapshot>();
+        foreach (var path in Directory.EnumerateFiles(directory, "snap-*.json"))
+        {
+            try
+            {
+                var json = File.ReadAllText(path);
+                var snapshot = string.IsNullOrWhiteSpace(json)
+                    ? null
+                    : JsonSerializer.Deserialize<MachineSnapshot>(json, JsonOptions);
+                if (snapshot is not null)
+                {
+                    snapshots.Add(snapshot);
+                }
+            }
+            catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
+            {
+                // 单个快照损坏不影响其他快照。
+            }
+        }
+
+        return snapshots.OrderBy(s => s.CollectedAt).ToList();
     }
 
     /// <inheritdoc />

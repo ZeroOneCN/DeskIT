@@ -108,6 +108,30 @@ internal static class RegistryProbe
 internal static class ProcessCapture
 {
     /// <summary>
+    /// 只读命令输出所用的解码编码。
+    /// Windows 内置命令行工具（powercfg、netsh、w32tm、cmdkey 等）按控制台 OEM 代码页输出，
+    /// 因此必须按 OEM 代码页解码，否则中文输出会乱码。
+    /// </summary>
+    private static readonly System.Text.Encoding NativeOutputEncoding = ResolveNativeOutputEncoding();
+
+    /// <summary>
+    /// 解析本机 OEM 代码页编码；代码页不可用（如非中文系统缺少注册项）时回退 UTF-8，保证不抛错。
+    /// </summary>
+    /// <returns>用于解码本机命令行工具输出的编码。</returns>
+    private static System.Text.Encoding ResolveNativeOutputEncoding()
+    {
+        try
+        {
+            System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
+            return System.Text.Encoding.GetEncoding(System.Globalization.CultureInfo.CurrentCulture.TextInfo.OEMCodePage);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PlatformNotSupportedException)
+        {
+            return System.Text.Encoding.UTF8;
+        }
+    }
+
+    /// <summary>
     /// 运行一条只读命令并捕获标准输出（不显示窗口，超时即终止）。
     /// </summary>
     /// <param name="fileName">可执行文件（如 netsh.exe）。</param>
@@ -122,7 +146,8 @@ internal static class ProcessCapture
             RedirectStandardError = true,
             UseShellExecute = false,
             CreateNoWindow = true,
-            StandardOutputEncoding = System.Text.Encoding.UTF8
+            StandardOutputEncoding = NativeOutputEncoding,
+            StandardErrorEncoding = NativeOutputEncoding
         };
 
         using var process = Process.Start(info);
