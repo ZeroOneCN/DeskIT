@@ -8,7 +8,7 @@ namespace DeskIT.Windows;
 /// <summary>
 /// 动作备份区存储（M4）。落盘位置为 U 盘数据目录下的 <c>data\backup\actions\</c>，
 /// 每次动作执行写一份审计记录，并保留脚本产出的回滚原始数据文件。
-/// 该目录后续由 M8 统一加密；本阶段先以可读文件形式落盘，便于现场审计与回退。
+/// 自 M8 起，该目录内容统一经介质金库<b>加密</b>落盘；未解锁时禁止写入。
 /// </summary>
 public interface IActionBackupStore
 {
@@ -40,6 +40,17 @@ public sealed class ActionBackupStore : IActionBackupStore
         Converters = { new JsonStringEnumConverter() }
     };
 
+    private readonly IMediaVault? _vault;
+
+    /// <summary>
+    /// 初始化动作备份区存储。
+    /// </summary>
+    /// <param name="vault">介质金库；为 null 时以明文落盘（仅供测试或未加密场景）。</param>
+    public ActionBackupStore(IMediaVault? vault = null)
+    {
+        _vault = vault;
+    }
+
     /// <inheritdoc />
     public string PrepareDirectory(string dataDirectory)
     {
@@ -53,6 +64,7 @@ public sealed class ActionBackupStore : IActionBackupStore
     {
         var directory = PrepareDirectory(dataDirectory);
         var path = Path.Combine(directory, $"{record.RunId}.json");
-        File.WriteAllText(path, JsonSerializer.Serialize(record, JsonOptions));
+        var content = JsonSerializer.Serialize(record, JsonOptions);
+        File.WriteAllText(path, _vault is null ? content : _vault.Protect(content));
     }
 }

@@ -11,6 +11,7 @@ namespace DeskIT.Windows;
 /// 目标机档案与快照的存储（M2）。落盘位置为 U 盘数据目录下的 data\snapshots\，
 /// 每台机器一个子目录（目录名由机器标识规范化并加哈希后缀，保证 ASCII 且不冲突），
 /// 目录内保存 profile.json（档案）与各次快照文件；同一档案仅保留最新 5 份快照。
+/// 自 M8 起，档案与快照文件内容均经介质金库<b>整体加密</b>落盘；未解锁时禁止写入。
 /// </summary>
 public interface ISnapshotStore
 {
@@ -59,6 +60,17 @@ public sealed class SnapshotStore : ISnapshotStore
         Converters = { new JsonStringEnumConverter() }
     };
 
+    private readonly IMediaVault? _vault;
+
+    /// <summary>
+    /// 初始化档案与快照存储。
+    /// </summary>
+    /// <param name="vault">介质金库；为 null 时以明文落盘（仅供测试或未加密场景）。</param>
+    public SnapshotStore(IMediaVault? vault = null)
+    {
+        _vault = vault;
+    }
+
     /// <inheritdoc />
     public IReadOnlyList<MachineProfile> LoadAllProfiles(string dataDirectory)
     {
@@ -102,7 +114,7 @@ public sealed class SnapshotStore : ISnapshotStore
         {
             try
             {
-                var json = File.ReadAllText(path);
+                var json = ReadContent(path);
                 var snapshot = string.IsNullOrWhiteSpace(json)
                     ? null
                     : JsonSerializer.Deserialize<MachineSnapshot>(json, JsonOptions);
@@ -128,7 +140,7 @@ public sealed class SnapshotStore : ISnapshotStore
 
         // 先落快照，再落档案：任一步失败都不会留下“档案有记录但快照缺失”的中间态。
         var snapshotPath = Path.Combine(directory, $"{snapshot.SnapshotId}.json");
-        File.WriteAllText(snapshotPath, JsonSerializer.Serialize(snapshot, JsonOptions));
+        WriteContent(snapshotPath, JsonSerializer.Serialize(snapshot, JsonOptions));
 
         var trimmed = CollectionRules.SelectSnapshotIdsToTrim(profile.SnapshotIds);
         if (trimmed.Count > 0)
@@ -145,7 +157,7 @@ public sealed class SnapshotStore : ISnapshotStore
             profile = profile with { SnapshotIds = profile.SnapshotIds.Except(trimmed).ToList() };
         }
 
-        File.WriteAllText(Path.Combine(directory, ProfileFileName), JsonSerializer.Serialize(profile, JsonOptions));
+        WriteContent(Path.Combine(directory, ProfileFileName), JsonSerializer.Serialize(profile, JsonOptions));
     }
 
     /// <summary>快照根目录。</summary>
@@ -156,7 +168,7 @@ public sealed class SnapshotStore : ISnapshotStore
     /// <summary>读取档案文件；文件缺失、损坏或为空时返回 null，不影响其他档案。</summary>
     /// <param name="path">档案文件路径。</param>
     /// <returns>档案或 null。</returns>
-    private static MachineProfile? TryReadProfile(string path)
+    private MachineProfile? TryReadProfile(string path)
     {
         if (!File.Exists(path))
         {
@@ -165,15 +177,35 @@ public sealed class SnapshotStore : ISnapshotStore
 
         try
         {
-            var json = File.ReadAllText(path);
+            var json = ReadContent(path);
             return string.IsNullOrWhiteSpace(json)
                 ? null
                 : JsonSerializer.Deserialize<MachineProfile>(json, JsonOptions);
         }
-        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException or MediaLockedException or MediaIntegrityException)
         {
             return null;
         }
+    }
+
+    /// <summary>把 JSON 内容加密后写入文件（未配置金库时原样写入）。</summary>
+    /// <param name="path">文件路径。</param>
+    /// <param name="content">明文 JSON 内容。</param>
+    private void WriteContent(string path, string content)
+        => File.WriteAllText(path, _vault is null ? content : _vault.Protect(content));
+
+    /// <summary>读取文件内容并解密（若为信封）；未解锁或校验失败时视为不可读。</summary>
+    /// <param name="path">文件路径。</param>
+    /// <returns>明文 JSON 内容。</returns>
+    private string ReadContent(string path)
+    {
+        var content = File.ReadAllText(path);
+        if (_vault is null || !MediaRules.IsEnvelope(content))
+        {
+            return content;
+        }
+
+        return _vault.Unprotect(content);
     }
 
     /// <summary>

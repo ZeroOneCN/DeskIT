@@ -1,6 +1,6 @@
 # TASK_DeskIT —— 原子任务分解（步骤 2 ~ 步骤 9）
 
-> 步骤 1（工程骨架）、步骤 2（M1 便携启动）、步骤 3（M2 设备识别与信息采集）、步骤 4（M3 问题诊断）、步骤 5（M4 修复动作库）、步骤 6（M5 软件安装卸载 + M6 账号与权限辅助）与步骤 7（M7 记录与多机台账）已完成。以下每个步骤**独立可编译、可测试**，且**每步一次提交并推送 master**，提交信息使用中文。
+> 步骤 1（工程骨架）、步骤 2（M1 便携启动）、步骤 3（M2 设备识别与信息采集）、步骤 4（M3 问题诊断）、步骤 5（M4 修复动作库）、步骤 6（M5 软件安装卸载 + M6 账号与权限辅助）、步骤 7（M7 记录与多机台账）与步骤 8（M8 介质安全与数据保护）已完成。以下每个步骤**独立可编译、可测试**，且**每步一次提交并推送 master**，提交信息使用中文。
 
 ## 步骤 2 —— M1 便携启动与运行环境（已完成）
 - **目标**：实现启动自检（程序哈希、数据目录可读写、可用空间、系统版本、当前权限、实例互斥）与提权/只读回退。
@@ -48,11 +48,13 @@
 - **实际落地**：Core 新增 `LedgerModels.cs`（问题类别 / 未解决原因 / 处理人 / 动作条目 / 处理记录 / 机器档案 / 统计 / 校验 / 报告写出结果 / 机器标识冲突模型）、`LedgerRules.cs`（记录标识、枚举文案、场景到类别映射、姓名遮蔽、凭据掩码、关键字段校验、统计汇总、按条件筛选、按机器归并、机器标识冲突检测、报告命名、整条记录脱敏）与 `LedgerReportBuilder.cs`（自包含 HTML / Markdown / CSV 构建），共补 22 项单测；Windows 新增 `LedgerStore.cs`（`data\ledger.db` 追加式 NDJSON：记录行 + 补录行，加载时按记录标识归并，单行损坏不影响其余行）、`ReportWriter.cs`（`reports\` 目录自包含 HTML + 同名 Markdown，默认脱敏、同名按 `-v2 / -v3` 版本化成对追加、IO 异常转为失败结果不抛出）；`MediaStateStore.cs` 扩展操作人登记（`List<OperatorInfo>` + 当前处理人 Get/Set/List）；App 新增“记录与台账（M7）”页（本次会话 / 目标机档案 / 台账总览三视图：处理人登记、结束会话并静默产出报告、按类别/工号/时间区间筛选、报告查看与导出 CSV/HTML/Markdown），并新增状态色转换器。
 - **实测**：`dotnet build DeskIT.sln -c Release` 0 警告 0 错误、`dotnet test` **116 项全绿**（其中台账相关 22 项）；报告为自包含 HTML（无 `<script>`、无 `http://`/`https://` 外链），默认脱敏命中姓名遮蔽与凭据掩码，同名报告按版本号成对追加；台账追加式落盘、补录归并、机器标识冲突检测均按预期工作。
 
-## 步骤 8 —— M8 介质安全与数据保护
+## 步骤 8 —— M8 介质安全与数据保护（已完成）
 - **目标**：主密码派生密钥加密数据目录、介质可写性探测、拔出保护、介质迁移。
 - **产出**：加密存储（AES-256-GCM 或等价）、探测与拔出保护流程、`operators.json` 登记。
 - **验收要点**：明文不落盘；主密码错误不可读台账；不使用机器绑定保护机制；探测失败触发保护流程。
 - **依赖**：步骤 7。
+- **实际落地**：Core 新增 `MediaModels.cs`（`MediaState` 五态、`MediaDescriptor` 介质头、`MediaSettings`、解锁/初始化/校验/迁移/临时清理结果、`AuditEventKind` 与 `AuditEvent`）与 `MediaRules.cs`（介质状态推导、主密码校验（≥8 位含中文）、可写判定、忘密警示文案、失败冷却门限、自动锁定判定、安全移除阻断、会话中断文案、审计按 365 天裁剪、信封识别），共补 22 项单测；Windows 新增 `MediaVault.cs`（PBKDF2-HMAC-SHA256 200000 次迭代 / 16 字节盐 / 32 字节密钥，AES-256-GCM 12 字节 nonce + 16 字节 tag，信封 `DESKIT1|base64(nonce)|base64(tag)|base64(ciphertext)`；解密失败区分“介质已锁定”与“校验失败/数据损坏”，**严禁 DPAPI/ProtectedData**）、`MediaStateStore.cs`（`data\operators.json` 扩展为介质头 + 设置 + 高级模式 + 处理人 + 失败计数/冷却，`Media` 节点保存 KDF 头信息，**不保存主密码明文**）、`MediaWritabilityProbe.cs`、`MediaWatchdog.cs`（默认每 10 秒探测）、`AuditStore.cs`（`data\audit\audit.db` 追加式 NDJSON，经 vault 加密）、`TempWorkspace.cs`（`%TEMP%\DeskIT\<runId>`）、`MediaMigration.cs`（`GetVolumeInformationW` 取卷序列号生成介质标识，不参与密钥派生）；`LedgerStore.cs`、`SnapshotStore.cs`、`DiagnosisStore.cs`、`ActionBackupStore.cs` 与 `ActionExecutor.cs` 全部改为**逐行经 vault 加密落盘**；App 新增启动门禁覆盖层（未初始化 → 初始化向导（主密码 + 登记处理人 + 明示忘密不可恢复 + 二次确认）；已初始化 → 解锁页）与“介质与设置（M8）”页，未解锁时禁止查看台账/执行动作/软件安装卸载/导出，右下角常驻介质可写状态指示 + 安全移除入口，默认无操作 10 分钟自动锁定，接 `MediaWatchdog` 拔出保护（停止后续动作、保留已完成结果、会话标记“已中断”），并新增 2 个状态转换器。
+- **实测**：`dotnet build DeskIT.sln -c Release` 0 警告 0 错误、`dotnet test DeskIT.sln -c Release` **138 项全绿**（其中 M8 相关 22 项）；信封与逐行加密落盘、失败冷却（第 5/6/7 次起 30/60/120 秒）、自动锁定与会话中断标记、介质迁移提示均按预期工作。
 
 ## 步骤 9 —— M9 受控自定义命令与动作沉淀
 - **目标**：管理员 + 高级模式 + 逐条确认 + 强制记录的自定义命令入口，并可将命令另存为正式修复动作。

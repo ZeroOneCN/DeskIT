@@ -8,6 +8,8 @@ namespace DeskIT.Windows;
 /// <summary>
 /// 台账存储（M7）。落盘位置为 U 盘数据目录下的 data\ledger.db，采用追加式（append-only）
 /// NDJSON：每行一条 JSON，绝不重写历史行；单行损坏不影响其他行。
+/// 自 M8 起，写入的每一行都经介质金库<b>逐行加密</b>（每行一个独立信封），读取时逐行解密；
+/// 未解锁时禁止写入（抛出 <see cref="MediaLockedException"/>）。
 /// </summary>
 public interface ILedgerStore
 {
@@ -47,6 +49,17 @@ public sealed class LedgerStore : ILedgerStore
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
 
+    private readonly IMediaVault? _vault;
+
+    /// <summary>
+    /// 初始化台账存储。
+    /// </summary>
+    /// <param name="vault">介质金库；为 null 时以明文落盘（仅供测试或未加密场景）。</param>
+    public LedgerStore(IMediaVault? vault = null)
+    {
+        _vault = vault;
+    }
+
     /// <inheritdoc />
     public IReadOnlyList<HandlingRecord> LoadAll(string dataDirectory)
     {
@@ -67,10 +80,17 @@ public sealed class LedgerStore : ILedgerStore
                 continue;
             }
 
+            var plain = TryUnprotect(line);
+            if (plain is null)
+            {
+                // 单行损坏或校验失败不影响其他行。
+                continue;
+            }
+
             LedgerLine? parsed;
             try
             {
-                parsed = JsonSerializer.Deserialize<LedgerLine>(line, JsonOptions);
+                parsed = JsonSerializer.Deserialize<LedgerLine>(plain, JsonOptions);
             }
             catch (Exception ex) when (ex is JsonException or NotSupportedException)
             {
@@ -124,7 +144,7 @@ public sealed class LedgerStore : ILedgerStore
             Kind = LedgerLine.RecordKind,
             Record = record
         }, JsonOptions);
-        File.AppendAllText(path, line + Environment.NewLine);
+        File.AppendAllText(path, Store(line) + Environment.NewLine);
     }
 
     /// <inheritdoc />
@@ -138,13 +158,38 @@ public sealed class LedgerStore : ILedgerStore
             RecordId = recordId,
             Supplement = supplement
         }, JsonOptions);
-        File.AppendAllText(path, line + Environment.NewLine);
+        File.AppendAllText(path, Store(line) + Environment.NewLine);
     }
 
     /// <summary>台账文件路径（data\ledger.db）。</summary>
     /// <param name="dataDirectory">数据目录。</param>
     /// <returns>台账文件绝对路径。</returns>
     private static string GetPath(string dataDirectory) => Path.Combine(dataDirectory, FileName);
+
+    /// <summary>把一行 JSON 加密为信封（未配置金库时原样返回）。</summary>
+    /// <param name="line">明文 JSON 行。</param>
+    /// <returns>落盘内容。</returns>
+    private string Store(string line) => _vault is null ? line : _vault.Protect(line);
+
+    /// <summary>解密一行（若为信封）；未解锁或校验失败时返回 null（不抛出，保证单行损坏不影响其他行）。</summary>
+    /// <param name="line">文件中的一行。</param>
+    /// <returns>明文 JSON 或 null。</returns>
+    private string? TryUnprotect(string line)
+    {
+        if (_vault is null || !MediaRules.IsEnvelope(line))
+        {
+            return line;
+        }
+
+        try
+        {
+            return _vault.Unprotect(line);
+        }
+        catch (Exception ex) when (ex is MediaLockedException or MediaIntegrityException)
+        {
+            return null;
+        }
+    }
 
     /// <summary>
     /// NDJSON 的一行：或是一条处理记录（Kind=record），或是一条补充说明（Kind=supplement）。

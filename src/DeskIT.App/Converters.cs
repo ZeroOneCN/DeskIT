@@ -343,6 +343,63 @@ public sealed class ActionOutcomeToBrushConverter : IValueConverter
         => throw new NotSupportedException();
 }
 
+/// <summary>把介质状态转换为徽标背景色（M8）。</summary>
+public sealed class MediaStateToBrushConverter : IValueConverter
+{
+    private static readonly SolidColorBrush NotInitializedBrush = new(Color.FromRgb(0x6B, 0x72, 0x80));
+    private static readonly SolidColorBrush LockedBrush = new(Color.FromRgb(0xD9, 0x77, 0x06));
+    private static readonly SolidColorBrush UnlockedBrush = new(Color.FromRgb(0x16, 0xA3, 0x4A));
+    private static readonly SolidColorBrush ReadOnlyBrush = new(Color.FromRgb(0xDC, 0x26, 0x26));
+    private static readonly SolidColorBrush IntegrityBrush = new(Color.FromRgb(0x99, 0x1B, 0x1B));
+
+    /// <summary>按介质状态返回背景色：未初始化=灰、已锁定=橙、已解锁=绿、只读或不可写=红、校验失败=深红。</summary>
+    /// <param name="value">MediaState 值。</param>
+    /// <param name="targetType">目标类型。</param>
+    /// <param name="parameter">未使用。</param>
+    /// <param name="culture">区域信息。</param>
+    /// <returns>对应的画刷。</returns>
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        => value switch
+        {
+            MediaState.Unlocked => UnlockedBrush,
+            MediaState.Locked => LockedBrush,
+            MediaState.ReadOnlyOrUnwritable => ReadOnlyBrush,
+            MediaState.IntegrityFailed => IntegrityBrush,
+            _ => NotInitializedBrush
+        };
+
+    /// <summary>不支持反向转换。</summary>
+    /// <param name="value">值。</param>
+    /// <param name="targetType">目标类型。</param>
+    /// <param name="parameter">参数。</param>
+    /// <param name="culture">区域信息。</param>
+    /// <returns>不返回。</returns>
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}
+
+/// <summary>把介质状态转换为中文徽标文本（M8）。</summary>
+public sealed class MediaStateToTextConverter : IValueConverter
+{
+    /// <summary>按介质状态返回中文名称（复用 Core 的 MediaRules.Describe）。</summary>
+    /// <param name="value">MediaState 值。</param>
+    /// <param name="targetType">目标类型。</param>
+    /// <param name="parameter">未使用。</param>
+    /// <param name="culture">区域信息。</param>
+    /// <returns>中文状态文本。</returns>
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        => value is MediaState state ? MediaRules.Describe(state) : "未知";
+
+    /// <summary>不支持反向转换。</summary>
+    /// <param name="value">值。</param>
+    /// <param name="targetType">目标类型。</param>
+    /// <param name="parameter">参数。</param>
+    /// <param name="culture">区域信息。</param>
+    /// <returns>不返回。</returns>
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}
+
 /// <summary>把会话结论转换为徽标背景色。</summary>
 public sealed class LedgerConclusionToBrushConverter : IValueConverter
 {

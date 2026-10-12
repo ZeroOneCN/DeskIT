@@ -8,9 +8,13 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 using DeskIT.Core;
 using DeskIT.Windows;
+
+// WPF 的 System.Windows.Controls 也定义了 MediaState（媒体播放状态），此处显式别名到本产品的介质状态。
+using MediaState = DeskIT.Core.MediaState;
 
 namespace DeskIT.App;
 
@@ -24,21 +28,27 @@ public partial class MainWindow : Window
     private readonly IPrivilegeInspector _privilegeInspector;
     private readonly IElevationLauncher _elevationLauncher;
     private readonly IMediaStateStore _mediaStateStore;
+    private readonly IMediaVault _vault;
+    private readonly IAuditStore _auditStore;
+    private readonly IMediaMigration _mediaMigration;
+    private readonly ITempWorkspace _tempWorkspace;
+    private readonly MediaWatchdog _watchdog;
+    private readonly System.Windows.Threading.DispatcherTimer _autoLockTimer;
     private readonly IStartupSelfCheckService _selfCheckService;
 
     private readonly string _programDirectory;
     private readonly string _dataDirectory;
 
-    private readonly IDeviceCollectionService _collectionService = new DeviceCollectionService();
+    private readonly IDeviceCollectionService _collectionService;
     private CancellationTokenSource? _collectionCancellation;
     private bool _collecting;
 
-    private readonly IProblemDiagnosisService _diagnosisService = new ProblemDiagnosisService();
+    private readonly IProblemDiagnosisService _diagnosisService;
     private CancellationTokenSource? _diagnosisCancellation;
     private bool _diagnosing;
 
     private readonly IActionLibraryLoader _actionLibraryLoader = new ActionLibraryLoader();
-    private readonly IActionExecutor _actionExecutor = new ActionExecutor();
+    private readonly IActionExecutor _actionExecutor;
     private readonly ObservableCollection<ActionResultView> _actionResults = new();
     private ActionLibrary? _actionLibrary;
     private IReadOnlyList<ActionItemView> _actionViews = Array.Empty<ActionItemView>();
@@ -48,7 +58,7 @@ public partial class MainWindow : Window
     private string _lastSessionId = string.Empty;
 
     private readonly IPackageLibraryLoader _packageLibraryLoader = new PackageLibraryLoader();
-    private readonly IPackageService _packageService = new PackageService();
+    private readonly IPackageService _packageService;
     private readonly ObservableCollection<PackageResultView> _packageResults = new();
     private PackageCatalog? _packageCatalog;
     private IReadOnlyList<InstalledSoftwareEntry> _installedSoftware = Array.Empty<InstalledSoftwareEntry>();
@@ -68,10 +78,19 @@ public partial class MainWindow : Window
     private StartupVerdict? _verdict;
     private bool _activationNoticeShown;
 
+    // ═══════════════════ M8 介质安全与数据保护 ═══════════════════
+    private MediaSettings _mediaSettings = new();
+    private MediaState _mediaState = MediaState.NotInitialized;
+    private bool _mediaUnlocked;
+    private bool _mediaGateReady;
+    private bool _sessionInterrupted;
+    private DateTimeOffset? _lastActivityAt;
+    private DateTimeOffset? _cooldownUntil;
+
     // ═══════════════════ M7 记录与多机台账 ═══════════════════
-    private readonly ILedgerStore _ledgerStore = new LedgerStore();
+    private readonly ILedgerStore _ledgerStore;
     private readonly IReportWriter _reportWriter = new ReportWriter();
-    private readonly ISnapshotStore _snapshotStore = new SnapshotStore();
+    private readonly ISnapshotStore _snapshotStore;
 
     private OperatorInfo? _currentOperator;
     private string _ledgerSessionId = string.Empty;
@@ -96,6 +115,17 @@ public partial class MainWindow : Window
         _privilegeInspector = new WindowsPrivilegeInspector();
         _elevationLauncher = new WindowsElevationLauncher();
         _mediaStateStore = new MediaStateStore();
+        _vault = new MediaVault(_mediaStateStore);
+        _auditStore = new AuditStore(_vault);
+        _mediaMigration = new MediaMigration(_mediaStateStore);
+        _tempWorkspace = new TempWorkspace();
+        _watchdog = new MediaWatchdog(new MediaWritabilityProbe(), FlushSessionFiles);
+        _watchdog.MediaUnavailable += OnMediaUnavailable;
+        _autoLockTimer = new System.Windows.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromSeconds(1)
+        };
+        _autoLockTimer.Tick += OnAutoLockTick;
         _selfCheckService = new StartupSelfCheckService(
             new ProgramIntegrityVerifier(),
             new DataDirectoryProbe(),
@@ -104,6 +134,19 @@ public partial class MainWindow : Window
 
         _programDirectory = AppContext.BaseDirectory;
         _dataDirectory = Path.Combine(_programDirectory, "data");
+
+        // M8：数据目录内的档案、快照、会话、动作备份、台账全部经介质金库加密落盘。
+        _snapshotStore = new SnapshotStore(_vault);
+        _ledgerStore = new LedgerStore(_vault);
+        _actionExecutor = new ActionExecutor(
+            backupStore: new ActionBackupStore(_vault),
+            vault: _vault);
+        _collectionService = new DeviceCollectionService(store: _snapshotStore);
+        _diagnosisService = new ProblemDiagnosisService(
+            new WindowsProblemDiagnoser(_snapshotStore),
+            new DiagnosisStore(_vault),
+            _snapshotStore);
+        _packageService = new PackageService(actionExecutor: _actionExecutor);
 
         InitializeComponent();
 
@@ -125,27 +168,708 @@ public partial class MainWindow : Window
         _guard.ActivationRequested += OnActivationRequested;
         Loaded += OnLoaded;
         Closed += OnClosed;
+
+        // 自动锁定：记录最后活动时间（鼠标与键盘事件）；计时器每秒刷新冷却倒计时并检查自动锁定。
+        PreviewMouseMove += OnUserActivity;
+        PreviewKeyDown += OnUserKeyActivity;
+        InitForgetWarningText.Text = MediaRules.DescribeForgetWarning();
+        _autoLockTimer.Start();
     }
 
-    /// <summary>窗口加载后执行启动自检并填充界面。</summary>
+    /// <summary>窗口加载后执行启动自检并初始化介质门禁（未初始化 / 未解锁前覆盖全窗口）。</summary>
     /// <param name="sender">事件源。</param>
     /// <param name="e">事件参数。</param>
     private async void OnLoaded(object sender, RoutedEventArgs e)
     {
         await RunSelfCheckAsync();
+        InitializeMediaGate();
     }
 
-    /// <summary>窗口关闭时解除单实例事件订阅。</summary>
+    /// <summary>窗口关闭时解除订阅、停止探测、清理临时工作目录并记录审计。</summary>
     /// <param name="sender">事件源。</param>
     /// <param name="e">事件参数。</param>
     private void OnClosed(object? sender, EventArgs e)
     {
         _guard.ActivationRequested -= OnActivationRequested;
+        _watchdog.MediaUnavailable -= OnMediaUnavailable;
+        _watchdog.Stop();
+        _autoLockTimer.Stop();
         _collectionCancellation?.Cancel();
         _diagnosisCancellation?.Cancel();
         _actionCancellation?.Cancel();
         _packageCancellation?.Cancel();
         _accountCancellation?.Cancel();
+
+        // 退出时清理目标机临时工作目录（PRD 7.4）；清理结果记入审计（介质已锁定时静默跳过）。
+        try
+        {
+            var cleanup = _tempWorkspace.Cleanup();
+            if (cleanup.Success)
+            {
+                AppendAudit(AuditEventKind.TempCleanup, "退出时已清理临时工作目录。");
+            }
+            else
+            {
+                AppendAudit(
+                    AuditEventKind.TempCleanup,
+                    $"临时工作目录未完全清理：{string.Join("；", cleanup.Reasons)}",
+                    string.Join("；", cleanup.LeftoverPaths));
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // 清理失败不影响退出。
+        }
+    }
+
+    // ═══════════════════ M8 介质安全与数据保护（接线） ═══════════════════
+
+    /// <summary>用户鼠标活动：刷新自动锁定计时起点（不打断输入）。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">鼠标事件参数。</param>
+    private void OnUserActivity(object sender, MouseEventArgs e) => MarkActivity();
+
+    /// <summary>用户键盘活动：刷新自动锁定计时起点。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">键盘事件参数。</param>
+    private void OnUserKeyActivity(object sender, KeyEventArgs e) => MarkActivity();
+
+    /// <summary>记录最近一次活动时间（仅在已解锁时计时，锁定时不计）。</summary>
+    private void MarkActivity()
+    {
+        if (_mediaUnlocked)
+        {
+            _lastActivityAt = DateTimeOffset.Now;
+        }
+    }
+
+    /// <summary>自动锁定计时器回调：刷新解锁界面冷却倒计时；已解锁且无操作超时则自动锁定。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private void OnAutoLockTick(object? sender, EventArgs e)
+    {
+        RefreshUnlockCooldownCountdown();
+
+        if (!_mediaUnlocked)
+        {
+            return;
+        }
+
+        if (MediaRules.ShouldAutoLock(_lastActivityAt, DateTimeOffset.Now, _mediaSettings.AutoLockMinutes))
+        {
+            HandleMediaLocked("已因长时间无操作自动锁定介质：请重新输入主密码解锁。");
+        }
+    }
+
+    /// <summary>初始化介质门禁：未初始化显示初始化向导；已初始化显示解锁面板。</summary>
+    private void InitializeMediaGate()
+    {
+        _mediaSettings = _mediaStateStore.GetSettings(_dataDirectory);
+        _mediaGateReady = false;
+
+        // 补齐解锁面板的持久化失败计数与冷却（重启后仍生效）。
+        _cooldownUntil = _mediaStateStore.GetCooldownUntil(_dataDirectory);
+
+        var descriptor = _vault.ReadDescriptor(_dataDirectory);
+        MediaGate.Visibility = Visibility.Visible;
+
+        if (descriptor is null)
+        {
+            _mediaState = MediaState.NotInitialized;
+            MediaInitPanel.Visibility = Visibility.Visible;
+            MediaUnlockPanel.Visibility = Visibility.Collapsed;
+            MediaGateSummaryText.Text = "当前介质尚未初始化：请设置主密码并登记处理人（一次性设置，随介质保存）。";
+        }
+        else
+        {
+            _mediaState = MediaState.Locked;
+            MediaInitPanel.Visibility = Visibility.Collapsed;
+            MediaUnlockPanel.Visibility = Visibility.Visible;
+            UnlockMediaIdText.Text = string.IsNullOrWhiteSpace(descriptor.MediaId)
+                ? "介质标识：无法读取（不影响解锁）"
+                : $"介质标识：{descriptor.MediaId}";
+            UnlockFailedText.Text = $"当前连续失败次数：{_mediaStateStore.GetUnlockFailures(_dataDirectory)}";
+            MediaGateSummaryText.Text = "介质已初始化：请输入主密码解锁后使用。未解锁前无法查看台账、执行动作与导出，只读诊断/采集按只读语义允许。";
+            RefreshMigrationNotice();
+            RefreshUnlockCooldownCountdown();
+        }
+
+        RefreshMediaStatus();
+        FooterStatus.Text = _mediaState == MediaState.NotInitialized
+            ? "介质尚未初始化：请先完成初始化并设置主密码。"
+            : "介质已锁定：请输入主密码解锁后再使用。";
+    }
+
+    /// <summary>刷新解锁界面的冷却倒计时；冷却结束即恢复“解锁”按钮可用。</summary>
+    private void RefreshUnlockCooldownCountdown()
+    {
+        if (_mediaGateReady)
+        {
+            return;
+        }
+
+        if (_cooldownUntil is { } until && until > DateTimeOffset.Now)
+        {
+            var remaining = until - DateTimeOffset.Now;
+            UnlockCooldownText.Text = $"连续失败次数过多：请等待 {remaining.TotalSeconds:0} 秒后再试（期间不提供绕过方式）。";
+            UnlockButton.IsEnabled = false;
+        }
+        else
+        {
+            _cooldownUntil = null;
+            UnlockCooldownText.Text = string.Empty;
+            UnlockButton.IsEnabled = true;
+        }
+    }
+
+    /// <summary>点击“初始化介质并解锁”：校验主密码与处理人后完成初始化。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private void OnInitializeMediaClick(object sender, RoutedEventArgs e)
+    {
+        var password = InitPasswordBox.Password;
+        var validation = MediaRules.ValidateMasterPassword(password);
+        if (!validation.IsValid)
+        {
+            InitMessageText.Text = validation.Message;
+            return;
+        }
+
+        if (!string.Equals(password, InitPasswordConfirmBox.Password, StringComparison.Ordinal))
+        {
+            InitMessageText.Text = "两次输入的主密码不一致，请重新输入。";
+            return;
+        }
+
+        if (InitConfirmCheck.IsChecked != true)
+        {
+            InitMessageText.Text = "请先勾选“我已了解：忘记主密码将无法恢复数据”。";
+            return;
+        }
+
+        var operatorInfo = new OperatorInfo(InitOperatorIdBox.Text.Trim(), InitOperatorNameBox.Text.Trim());
+        if (!LedgerRules.IsCompleteOperator(operatorInfo))
+        {
+            InitMessageText.Text = "初始化必须登记处理人：工号与姓名两项均需填写。";
+            return;
+        }
+
+        MediaInitializationResult result;
+        try
+        {
+            result = _vault.Initialize(_dataDirectory, password, operatorInfo);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            InitMessageText.Text = $"初始化失败（介质不可写）：{ex.Message}";
+            return;
+        }
+
+        if (!result.Success)
+        {
+            InitMessageText.Text = result.Message;
+            return;
+        }
+
+        InitPasswordBox.Clear();
+        InitPasswordConfirmBox.Clear();
+        InitMessageText.Text = result.Message;
+        ApplyUnlockSuccess(
+            "介质初始化完成，已解锁并进入主界面。",
+            AuditEventKind.MediaInitialized,
+            "介质初始化：设置主密码并登记处理人。");
+    }
+
+    /// <summary>点击“解锁介质”：校验主密码并维护失败计数与冷却。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private void OnUnlockMediaClick(object sender, RoutedEventArgs e)
+    {
+        if (_cooldownUntil is { } until && until > DateTimeOffset.Now)
+        {
+            RefreshUnlockCooldownCountdown();
+            return;
+        }
+
+        MediaUnlockResult result;
+        try
+        {
+            result = _vault.Unlock(_dataDirectory, UnlockPasswordBox.Password);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            UnlockFailedText.Text = $"解锁失败（介质不可读）：{ex.Message}";
+            return;
+        }
+
+        if (!result.Success)
+        {
+            _cooldownUntil = result.Cooldown > TimeSpan.Zero ? DateTimeOffset.Now + result.Cooldown : _vault.CooldownUntil;
+            UnlockPasswordBox.Clear();
+            UnlockFailedText.Text = result.Message;
+            RefreshUnlockCooldownCountdown();
+            return;
+        }
+
+        UnlockPasswordBox.Clear();
+        _cooldownUntil = null;
+        ApplyUnlockSuccess("解锁成功，已进入主界面。", AuditEventKind.UnlockSucceeded, "主密码校验通过，介质已解锁。");
+    }
+
+    /// <summary>解锁面板密码框回车即触发解锁。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">键盘事件参数。</param>
+    private void OnUnlockPasswordKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter)
+        {
+            OnUnlockMediaClick(sender, e);
+        }
+    }
+
+    /// <summary>
+    /// 解锁成功后的统一处理：进入主界面、启动拔出保护与自动锁定、刷新设置与状态，并记录审计。
+    /// </summary>
+    /// <param name="message">面向 IT 人员的中文提示。</param>
+    /// <param name="kind">对应的审计事件类型。</param>
+    /// <param name="summary">审计摘要。</param>
+    private void ApplyUnlockSuccess(string message, AuditEventKind kind, string summary)
+    {
+        _mediaUnlocked = true;
+        _mediaGateReady = true;
+        _sessionInterrupted = false;
+        _mediaState = MediaState.Unlocked;
+        _lastActivityAt = DateTimeOffset.Now;
+
+        MediaGate.Visibility = Visibility.Collapsed;
+        MediaInitPanel.Visibility = Visibility.Collapsed;
+        MediaUnlockPanel.Visibility = Visibility.Collapsed;
+
+        _mediaSettings = _mediaStateStore.GetSettings(_dataDirectory);
+        _currentOperator = _mediaStateStore.GetCurrentOperator(_dataDirectory);
+
+        // 目标机临时工作目录（仅临时目录，退出清理）。
+        try
+        {
+            _tempWorkspace.Create(string.IsNullOrWhiteSpace(_ledgerSessionId) ? "run-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") : _ledgerSessionId);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // 无法创建临时目录不阻断使用。
+        }
+
+        _watchdog.Start(_dataDirectory);
+
+        AppendAudit(kind, summary, message);
+        RefreshMediaStatus();
+        RefreshSettingsView();
+        RefreshMigrationNotice();
+        FooterStatus.Text = message;
+
+        // 解锁后按需刷新当前页数据（避免启动时读取加密数据）。
+        if (MainTabs.SelectedIndex == 4)
+        {
+            EnsurePackagesLoaded();
+        }
+        else if (MainTabs.SelectedIndex == 6)
+        {
+            EnsureLedgerLoaded();
+        }
+    }
+
+    /// <summary>锁定介质并把窗口切回解锁门禁（自动锁定、手动锁定、安全移除共用）。</summary>
+    /// <param name="message">面向 IT 人员的中文提示。</param>
+    private void HandleMediaLocked(string message)
+    {
+        _vault.Lock();
+        _mediaUnlocked = false;
+        _mediaGateReady = false;
+        _mediaState = MediaState.Locked;
+
+        _watchdog.Stop();
+        _tempWorkspace.Cleanup();
+
+        MediaInitPanel.Visibility = Visibility.Collapsed;
+        MediaUnlockPanel.Visibility = Visibility.Visible;
+        MediaGateSummaryText.Text = message;
+        UnlockPasswordBox.Clear();
+        UnlockFailedText.Text = string.Empty;
+        _cooldownUntil = _mediaStateStore.GetCooldownUntil(_dataDirectory);
+        RefreshUnlockCooldownCountdown();
+        MediaGate.Visibility = Visibility.Visible;
+        RefreshMediaStatus();
+        FooterStatus.Text = message;
+    }
+
+    /// <summary>点击“立即锁定介质”：主动锁定并回到解锁门禁。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private void OnLockMediaClick(object sender, RoutedEventArgs e)
+        => HandleMediaLocked("已手动锁定介质：请重新输入主密码解锁。");
+
+    /// <summary>点击“安全移除介质”：存在未结束会话时阻止，否则锁定并提示可拔出。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private void OnSafeEjectClick(object sender, RoutedEventArgs e)
+    {
+        var state = CurrentSessionState();
+        if (MediaRules.ShouldBlockSafeEject(state))
+        {
+            MessageBox.Show(
+                this,
+                $"当前会话尚未结束（{SessionStateRules.Describe(state)}）：请先在“记录与台账（M7）”完成或放弃会话，再安全移除介质。",
+                "安全移除介质",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
+        var confirm = MessageBox.Show(
+            this,
+            "确认安全移除介质？\n将立即锁定介质并停止写入，之后可直接拔出 U 盘。",
+            "安全移除介质",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question);
+        if (confirm != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        AppendAudit(AuditEventKind.SessionInterruptedOrRemoved, "安全移除介质：已锁定并停止写入。");
+        HandleMediaLocked("已完成安全移除：现在可以拔出 U 盘。");
+        FooterStatus.Text = "已完成安全移除：现在可以拔出 U 盘。";
+    }
+
+    /// <summary>介质看门狗回调（拔出保护）：立即停止后续动作、保留已完成结果、标记会话“已中断”并提示。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">介质不可用事件参数。</param>
+    private void OnMediaUnavailable(object? sender, MediaUnavailableEventArgs e)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            if (_sessionInterrupted)
+            {
+                return;
+            }
+
+            _sessionInterrupted = true;
+
+            // 立即停止后续动作：取消所有进行中的采集 / 诊断 / 动作 / 安装。
+            _collectionCancellation?.Cancel();
+            _diagnosisCancellation?.Cancel();
+            _actionCancellation?.Cancel();
+            _packageCancellation?.Cancel();
+
+            _mediaState = MediaState.ReadOnlyOrUnwritable;
+            RefreshMediaStatus();
+
+            // 保留已完成结果：不清空已采集 / 已诊断 / 已执行结果；仅标记会话“已中断”。
+            AppendAudit(
+                AuditEventKind.SessionInterruptedOrRemoved,
+                "介质不可写或已被移除：会话已标记为“已中断”。",
+                e.Message);
+            ShowBanner(e.Message);
+            FooterStatus.Text = e.Message;
+
+            MessageBox.Show(this, e.Message, "介质保护", MessageBoxButton.OK, MessageBoxImage.Warning);
+        });
+    }
+
+    /// <summary>会话文件 flush 回调：本产品的台账 / 快照 / 会话 / 审计均以同步方式写出，无文件流缓冲残留。</summary>
+    private static void FlushSessionFiles()
+    {
+        // 所有加密数据文件均以同步方式写出（File.WriteAllText / File.AppendAllText），不保留缓冲流，无需额外 flush。
+    }
+
+    /// <summary>刷新右下角常驻介质状态指示。</summary>
+    private void RefreshMediaStatus()
+    {
+        MediaStatusPill.Tag = _mediaState;
+        MediaStatusText.Tag = _mediaState;
+    }
+
+    /// <summary>刷新“介质与设置（M8）”页：介质状态、介质级设置、高级模式与处理人。</summary>
+    private void RefreshSettingsView()
+    {
+        _mediaSettings = _mediaStateStore.GetSettings(_dataDirectory);
+        SettingsAutoLockBox.Text = _mediaSettings.AutoLockMinutes.ToString(CultureInfo.InvariantCulture);
+        SettingsDesensitizeCheck.IsChecked = _mediaSettings.UiDesensitized;
+        SettingsDataDirectoryText.Text = _dataDirectory;
+
+        var descriptor = _vault.ReadDescriptor(_dataDirectory);
+        SettingsMediaIdText.Text = descriptor is null
+            ? "（尚未初始化）"
+            : string.IsNullOrWhiteSpace(descriptor.MediaId) ? "（无法读取）" : descriptor.MediaId;
+
+        SettingsAdvancedStateText.Text = _advancedModeEnabled
+            ? "当前：已开启（随介质保存，跨机、跨启动持续有效）。"
+            : "当前：关闭（开启需主密码验证并二次确认）。";
+        SettingsAdvancedButton.Content = _advancedModeEnabled ? "关闭高级模式" : "开启高级模式";
+
+        _currentOperator = _mediaStateStore.GetCurrentOperator(_dataDirectory);
+        SettingsOperatorText.Text = _currentOperator is null
+            ? "介质尚未登记处理人（可在“记录与台账（M7）”登记）。"
+            : $"当前登记处理人：{_currentOperator.DisplayText}";
+
+        var operators = _mediaStateStore.ListOperators(_dataDirectory);
+        SettingsOperatorCombo.ItemsSource = operators;
+        SettingsOperatorCombo.SelectedIndex = operators.Count > 0 ? 0 : -1;
+
+        RefreshMigrationNotice();
+    }
+
+    /// <summary>刷新介质迁移提示（数据目录被复制到新介质时明示“已更换介质”）。</summary>
+    private void RefreshMigrationNotice()
+    {
+        var currentId = _mediaMigration.ResolveCurrentMediaId(_dataDirectory);
+        var result = _mediaMigration.DetectMediaChange(_dataDirectory, currentId);
+
+        SettingsMigrationText.Text = result.Message;
+        MigrationNoticeText.Text = result.MediaChanged ? result.Message : string.Empty;
+        MigrationNoticeText.Visibility = result.MediaChanged ? Visibility.Visible : Visibility.Collapsed;
+
+        if (result.MediaChanged)
+        {
+            AppendAudit(AuditEventKind.MediaChanged, "已更换介质：数据目录被复制到新介质。", result.Message);
+        }
+    }
+
+    /// <summary>写入审计事件（介质未解锁或写入失败时静默跳过，不阻断主流程）。</summary>
+    /// <param name="kind">事件类型。</param>
+    /// <param name="summary">事件摘要。</param>
+    /// <param name="detail">事件明细（不得包含凭证明文）。</param>
+    /// <param name="sessionId">关联会话标识；未关联时为空串。</param>
+    private void AppendAudit(AuditEventKind kind, string summary, string detail = "", string sessionId = "")
+    {
+        if (!_mediaUnlocked)
+        {
+            return;
+        }
+
+        try
+        {
+            var operatorInfo = _mediaStateStore.GetCurrentOperator(_dataDirectory);
+            var now = DateTimeOffset.Now;
+            var auditEvent = new AuditEvent
+            {
+                EventId = MediaRules.NewAuditEventId(now),
+                Kind = kind,
+                At = now,
+                ComputerName = Environment.MachineName,
+                OperatorEmployeeId = operatorInfo?.EmployeeId ?? string.Empty,
+                OperatorName = operatorInfo?.Name ?? string.Empty,
+                SessionId = sessionId,
+                Summary = summary,
+                Detail = detail
+            };
+            _auditStore.Append(_dataDirectory, auditEvent);
+        }
+        catch (Exception) when (!System.Diagnostics.Debugger.IsAttached)
+        {
+            // 审计写入失败不阻断主流程。
+        }
+    }
+
+    /// <summary>按当前运行态推断会话状态（用于安全移除门禁：会话未结束则阻止移除）。</summary>
+    /// <returns>当前会话状态。</returns>
+    private SessionState CurrentSessionState()
+    {
+        if (_sessionInterrupted)
+        {
+            return SessionState.Interrupted;
+        }
+
+        if (_collecting)
+        {
+            return SessionState.Collecting;
+        }
+
+        if (_diagnosing)
+        {
+            return SessionState.Diagnosing;
+        }
+
+        if (_acting || _packaging)
+        {
+            return SessionState.Acting;
+        }
+
+        // 已建立但未结束的会话属于非终态，阻止安全移除。
+        return _ledgerSessionActive ? SessionState.New : SessionState.Closed;
+    }
+
+    /// <summary>写入门禁：未解锁时提示并阻止（查看台账、执行动作、安装卸载、导出均需解锁）。</summary>
+    /// <returns>已解锁返回 true；否则提示并返回 false。</returns>
+    private bool EnsureUnlocked()
+    {
+        if (_mediaUnlocked)
+        {
+            return true;
+        }
+
+        MessageBox.Show(this, "介质尚未解锁：请先输入主密码解锁后再操作。", "介质安全", MessageBoxButton.OK, MessageBoxImage.Warning);
+        return false;
+    }
+
+    /// <summary>点击“保存设置”：把自动锁定与界面脱敏写入介质级设置。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private void OnSaveSettingsClick(object sender, RoutedEventArgs e)
+    {
+        if (!EnsureUnlocked())
+        {
+            return;
+        }
+
+        if (!int.TryParse(SettingsAutoLockBox.Text.Trim(), out var minutes) || minutes < 0 || minutes > 240)
+        {
+            SettingsMessageText.Text = "自动锁定分钟数需为 0~240 的整数（0 表示不自动锁定）。";
+            return;
+        }
+
+        var settings = new MediaSettings
+        {
+            AutoLockMinutes = minutes,
+            UiDesensitized = SettingsDesensitizeCheck.IsChecked == true
+        };
+
+        try
+        {
+            _mediaStateStore.SetSettings(_dataDirectory, settings);
+            _mediaSettings = settings;
+            SettingsMessageText.Text = "设置已保存到介质（data/operators.json），跨机、跨启动有效。";
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            SettingsMessageText.Text = $"保存失败（介质可能不可写）：{ex.Message}";
+        }
+    }
+
+    /// <summary>点击“开启 / 关闭高级模式”：开启需主密码验证 + 风险明示 + 二次确认，变化记入审计。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private async void OnToggleAdvancedFromSettingsClick(object sender, RoutedEventArgs e)
+    {
+        if (!EnsureUnlocked())
+        {
+            return;
+        }
+
+        if (_verdict is null || !_verdict.IsAdministrator)
+        {
+            SettingsAdvancedMessageText.Text = "仅管理员模式可开启高级模式。";
+            return;
+        }
+
+        if (_advancedModeEnabled)
+        {
+            var confirmClose = MessageBox.Show(
+                this,
+                "确认关闭高级模式？关闭后无法执行任意系统命令。",
+                "关闭高级模式",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question);
+            if (confirmClose != MessageBoxResult.Yes)
+            {
+                return;
+            }
+
+            _mediaStateStore.SetAdvancedModeEnabled(_dataDirectory, false);
+            _advancedModeEnabled = false;
+            AppendAudit(AuditEventKind.AdvancedModeChanged, "高级模式已关闭。");
+            SettingsAdvancedMessageText.Text = "高级模式已关闭。";
+            await RunSelfCheckAsync();
+            RefreshSettingsView();
+            return;
+        }
+
+        var password = SettingsPasswordBox.Password;
+        var unlock = _vault.Unlock(_dataDirectory, password);
+        if (!unlock.Success)
+        {
+            SettingsAdvancedMessageText.Text = $"主密码验证失败：{unlock.Message}";
+            AppendAudit(AuditEventKind.UnlockFailed, "高级模式开启：主密码验证失败。");
+            return;
+        }
+
+        SettingsPasswordBox.Clear();
+
+        var risk = MessageBox.Show(
+            this,
+            "开启高级模式后可执行任意系统命令，可能对目标机造成不可逆影响，风险自担。是否继续？",
+            "开启高级模式（第 1 步：风险明示）",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning);
+        if (risk != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        var confirm = MessageBox.Show(
+            this,
+            "确认开启高级模式？该状态将随介质保存，跨机、跨启动持续有效。",
+            "开启高级模式（第 2 步：二次确认）",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question);
+        if (confirm != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        _mediaStateStore.SetAdvancedModeEnabled(_dataDirectory, true);
+        _advancedModeEnabled = true;
+        AppendAudit(AuditEventKind.AdvancedModeChanged, "高级模式已开启。");
+        SettingsAdvancedMessageText.Text = "高级模式已开启。";
+        await RunSelfCheckAsync();
+        RefreshSettingsView();
+    }
+
+    /// <summary>点击“切换为所选处理人”：二次确认后切换并记入审计。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private void OnSwitchOperatorClick(object sender, RoutedEventArgs e)
+    {
+        if (!EnsureUnlocked())
+        {
+            return;
+        }
+
+        if (SettingsOperatorCombo.SelectedItem is not OperatorInfo target)
+        {
+            SettingsOperatorMessageText.Text = "请先选择一个已登记的处理人（可在“记录与台账（M7）”登记新处理人）。";
+            return;
+        }
+
+        if (_currentOperator is not null && SameOperator(_currentOperator, target))
+        {
+            SettingsOperatorMessageText.Text = $"当前处理人已是 {target.DisplayText}，无需切换。";
+            return;
+        }
+
+        var confirm = MessageBox.Show(
+            this,
+            $"确认将介质当前处理人切换为 {target.DisplayText}？\n切换将记入审计。",
+            "切换处理人",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question);
+        if (confirm != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        try
+        {
+            _mediaStateStore.SetCurrentOperator(_dataDirectory, target);
+            _currentOperator = target;
+            AppendAudit(AuditEventKind.OperatorSwitched, $"处理人已切换为 {target.DisplayText}。");
+            SettingsOperatorMessageText.Text = $"已切换处理人为 {target.DisplayText}。";
+            RefreshOperatorFields();
+            RefreshSettingsView();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            SettingsOperatorMessageText.Text = $"切换失败（介质可能不可写）：{ex.Message}";
+        }
     }
 
     /// <summary>收到其他实例的激活请求：恢复并前置窗口，并提示已存在的实例。</summary>
@@ -372,13 +1096,17 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 切换高级模式：开启需风险明示 + 二次确认；关闭无需确认。
-    /// 主密码验证将在介质加密（M8）落地后接入，本阶段先实现介质级开关与二次确认。
+    /// 切换高级模式：开启需主密码验证 + 风险明示 + 二次确认；关闭无需确认。变化记入审计。
     /// </summary>
     /// <param name="sender">事件源。</param>
     /// <param name="e">事件参数。</param>
     private async void OnToggleAdvancedClick(object sender, RoutedEventArgs e)
     {
+        if (!EnsureUnlocked())
+        {
+            return;
+        }
+
         if (_verdict is null || !_verdict.IsAdministrator)
         {
             return;
@@ -387,7 +1115,24 @@ public partial class MainWindow : Window
         if (_advancedModeEnabled)
         {
             _mediaStateStore.SetAdvancedModeEnabled(_dataDirectory, false);
+            _advancedModeEnabled = false;
+            AppendAudit(AuditEventKind.AdvancedModeChanged, "高级模式已关闭。");
             await RunSelfCheckAsync();
+            return;
+        }
+
+        // M8：开启高级模式需先通过主密码验证（仅内存使用，不落盘）。
+        var password = PromptMasterPassword();
+        if (string.IsNullOrEmpty(password))
+        {
+            return;
+        }
+
+        var verify = _vault.Unlock(_dataDirectory, password);
+        if (!verify.Success)
+        {
+            AppendAudit(AuditEventKind.UnlockFailed, "高级模式开启：主密码验证失败。");
+            MessageBox.Show(this, $"主密码验证失败：{verify.Message}", "主密码验证", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
@@ -416,7 +1161,56 @@ public partial class MainWindow : Window
         }
 
         _mediaStateStore.SetAdvancedModeEnabled(_dataDirectory, true);
+        _advancedModeEnabled = true;
+        AppendAudit(AuditEventKind.AdvancedModeChanged, "高级模式已开启。");
         await RunSelfCheckAsync();
+    }
+
+    /// <summary>弹出主密码验证窗口，返回用户输入的主密码；取消或留空时返回 null。</summary>
+    /// <returns>主密码或 null。</returns>
+    private string? PromptMasterPassword()
+    {
+        var window = new Window
+        {
+            Title = "主密码验证",
+            Width = 380,
+            SizeToContent = SizeToContent.Height,
+            ResizeMode = ResizeMode.NoResize,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Owner = this,
+            ShowInTaskbar = false
+        };
+
+        var panel = new StackPanel { Margin = new Thickness(18) };
+        panel.Children.Add(new TextBlock
+        {
+            Text = "开启高级模式需要验证主密码（主密码仅内存使用，不写入介质）。",
+            TextWrapping = TextWrapping.Wrap
+        });
+
+        var box = new PasswordBox { Height = 28, Margin = new Thickness(0, 10, 0, 0) };
+        panel.Children.Add(box);
+
+        var confirmButton = new Button
+        {
+            Content = "验证并继续",
+            Height = 30,
+            MinWidth = 120,
+            Margin = new Thickness(0, 14, 0, 0),
+            HorizontalAlignment = HorizontalAlignment.Right,
+            IsDefault = true
+        };
+        panel.Children.Add(confirmButton);
+
+        var password = string.Empty;
+        confirmButton.Click += (_, _) =>
+        {
+            password = box.Password;
+            window.DialogResult = true;
+        };
+
+        window.Content = panel;
+        return window.ShowDialog() == true && !string.IsNullOrEmpty(password) ? password : null;
     }
 
     /// <summary>点击“开始基础采集”：以启动时自动触发的默认范围采集（≤60 秒，不含已装软件全量清单）。</summary>
@@ -965,6 +1759,11 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (!EnsureUnlocked())
+        {
+            return;
+        }
+
         if (_verdict is null || !_verdict.CanStart)
         {
             MessageBox.Show(this, "启动自检未通过，暂不能执行修复动作。", "DeskIT", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -1218,6 +2017,13 @@ public partial class MainWindow : Window
             _actionCancellation = null;
             SetActingBusy(false);
             UpdateActionLibraryText();
+
+            // M8：动作执行记入审计（不含任何凭证明文）。
+            AppendAudit(
+                AuditEventKind.ActionExecuted,
+                cancelled ? $"已中止：完成 {completed} / {selected.Count} 项修复动作。" : $"已执行 {completed} 项修复动作。",
+                string.Join("；", selected.Take(completed).Select(view => view.Name)),
+                _lastSessionId);
         }
     }
 
@@ -1283,6 +2089,11 @@ public partial class MainWindow : Window
         {
             // M7：首次进入“记录与台账”页时按需加载台账，避免拖慢启动。
             EnsureLedgerLoaded();
+        }
+        else if (MainTabs.SelectedIndex == 7)
+        {
+            // M8：进入“介质与设置”页时刷新介质状态、设置、高级模式与处理人。
+            RefreshSettingsView();
         }
     }
 
@@ -1583,6 +2394,11 @@ public partial class MainWindow : Window
     private async void OnRunPackageClick(object sender, RoutedEventArgs e)
     {
         if (_packaging || _selectedPackage is null)
+        {
+            return;
+        }
+
+        if (!EnsureUnlocked())
         {
             return;
         }
@@ -2139,6 +2955,11 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (!EnsureUnlocked())
+        {
+            return;
+        }
+
         if (_verdict is null || !_verdict.CanStart)
         {
             MessageBox.Show(this, "启动自检未通过，暂不能完成会话并写入台账。", "DeskIT", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -2248,6 +3069,13 @@ public partial class MainWindow : Window
                 writeResult.Success ? Color.FromRgb(0x16, 0xA3, 0x4A) : Color.FromRgb(0xB4, 0x53, 0x09));
             LedgerReportResultText.Visibility = Visibility.Visible;
 
+            // M8：会话产出报告记入审计（报告名与记录号，不含凭证明文）。
+            AppendAudit(
+                AuditEventKind.ReportProduced,
+                $"会话 {record.SessionId} 已写入台账并产出脱敏报告。",
+                $"记录 {record.RecordId}；报告 {(writeResult.Success ? record.ReportFileName : "未产出")}；动作 {record.Actions.Count} 个。",
+                record.SessionId);
+
             EndLedgerSession();
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -2267,10 +3095,15 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>按单选按钮取当前选择的会话结论（默认“已解决”）。</summary>
+    /// <summary>按单选按钮取当前选择的会话结论（默认“已解决”）；会话被异常中断时固定为“已中断”。</summary>
     /// <returns>会话结论。</returns>
     private SessionConclusion CurrentConclusion()
     {
+        if (_sessionInterrupted)
+        {
+            return SessionConclusion.Interrupted;
+        }
+
         if (LedgerConclusionRestartRadio.IsChecked == true)
         {
             return SessionConclusion.PendingRestart;
@@ -2305,6 +3138,7 @@ public partial class MainWindow : Window
     private void EndLedgerSession()
     {
         _ledgerSessionActive = false;
+        _sessionInterrupted = false;
         _ledgerSessionStartedAt = null;
         _ledgerScenes = Array.Empty<DiagnosisSceneResult>();
         _rawActionResults.Clear();
@@ -2466,6 +3300,11 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (!EnsureUnlocked())
+        {
+            return;
+        }
+
         var scope = (LedgerExportScopeCombo.SelectedItem as LedgerExportScopeOption)?.Scope ?? LedgerExportScope.All;
         var format = (LedgerExportFormatCombo.SelectedItem as LedgerExportFormatOption)?.Format ?? LedgerExportFormat.Csv;
         var records = ResolveExportRecords(scope);
@@ -2495,6 +3334,7 @@ public partial class MainWindow : Window
             {
                 File.WriteAllText(csvDialog.FileName, LedgerReportBuilder.BuildCsv(records), new UTF8Encoding(true));
                 LedgerExportStatusText.Text = $"已导出 {records.Count} 条台账记录：{csvDialog.FileName}";
+                AppendAudit(AuditEventKind.Export, $"已导出台账 {records.Count} 条（CSV）。", csvDialog.FileName, _ledgerSessionId);
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
@@ -2527,6 +3367,7 @@ public partial class MainWindow : Window
         {
             File.WriteAllText(reportDialog.FileName, content, new UTF8Encoding(true));
             LedgerExportStatusText.Text = $"已导出记录 {latest.RecordId} 的报告：{reportDialog.FileName}";
+            AppendAudit(AuditEventKind.Export, $"已导出记录 {latest.RecordId} 的报告（{extension}）。", reportDialog.FileName, latest.SessionId);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {

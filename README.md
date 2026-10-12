@@ -70,11 +70,12 @@ powershell -ExecutionPolicy Bypass -File tools\Generate-Manifest.ps1 -PublishDir
 | 5 | M4 修复动作库 | 已完成 |
 | 6 | M5 软件安装与卸载 + M6 账号与权限辅助 | 已完成 |
 | 7 | M7 记录与多机台账 | 已完成 |
+| 8 | M8 介质安全与数据保护 | 已完成 |
 
 **M1（步骤 2）**：启动页呈现三块内容——启动自检结果（程序完整性、数据目录可写、介质可用空间、目标系统版本、当前权限、并发实例）、当前权限与提权入口（管理员提权 / 只读回退）、本次能力摘要；并实现高级模式的介质级开关（随 `data/operators.json` 保存，开启需二次确认）。
 - 判定规则集中在 [StartupRules.cs](src/DeskIT.Core/StartupRules.cs)（纯逻辑、可单测）：空间 200 MB / 500 MB 阈值、系统版本支持范围、完整性结论、能力推导。
 - Windows 能力封装见 [src/DeskIT.Windows](src/DeskIT.Windows)：权限检测、提权启动、单实例守卫、完整性校验、目录读写探测、卷空间、系统版本（`RtlGetVersion`）。
-- 高级模式开关的主密码验证将在介质加密（M8）落地后接入。
+- 高级模式开关开启需主密码验证 + 二次确认（M8 落地后接入，见 [MediaVault.cs](src/DeskIT.Windows/MediaVault.cs)）。
 
 **M2（步骤 3）**：设备信息采集页提供“基础采集（≤60 秒，不含软件全量清单）”与“完整采集（含已装软件清单）”两个入口，并按分组展示摘要卡片；采集全程只读，结果写入 U 盘 `data/snapshots/`，不向目标机磁盘写入任何产物。
 - 采集分 7 组：系统、硬件、存储、网络、账号与环境、已装软件、安全与更新；其中账号与环境、已装软件、安全与更新可单项关闭（界面取消勾选）。
@@ -121,6 +122,16 @@ powershell -ExecutionPolicy Bypass -File tools\Generate-Manifest.ps1 -PublishDir
 - 报告**默认脱敏**：处理人姓名遮蔽（1 字原样、2 字 → `张*`、3 字及以上 → `张*明`）而工号保留；脚本输出与诊断依据中的 `password= / passwd: / pwd= / /pass: / -p / --password` 等凭据值掩码为 `******`。报告为**自包含 HTML**（内联样式、无脚本、无任何出网引用），双击即可离线打开；同名文件按 `-v2 / -v3` 版本化成对追加（HTML 与 Markdown 使用同一版本号）。
 - 台账总览提供按**问题类别 / 处理人工号 / 处理时间区间**筛选、按机器归并的档案视图（最近处理时间倒序、显示最近结论）与统计汇总（总数 / 机器数 / 各类别与处理人计数 / 未解决占比），并可把当前筛选结果导出为 **CSV 台账表**（多条）或单条 **HTML / Markdown 报告**；报告量少时按机器标识与会话标识自动命名，写入失败**不抛异常**（如实提示并保留台账记录）。
 - 纯规则见 [LedgerModels.cs](src/DeskIT.Core/LedgerModels.cs)、[LedgerRules.cs](src/DeskIT.Core/LedgerRules.cs) 与 [LedgerReportBuilder.cs](src/DeskIT.Core/LedgerReportBuilder.cs)；台账落盘与报告写出见 [LedgerStore.cs](src/DeskIT.Windows/LedgerStore.cs) 与 [ReportWriter.cs](src/DeskIT.Windows/ReportWriter.cs)；界面见 [MainWindow.xaml](src/DeskIT.App/MainWindow.xaml) 的“记录与台账（M7）”页（本次会话 / 目标机档案 / 台账总览三视图）。
+
+**M8（步骤 8）**：介质安全与数据保护——首次使用设置**主密码**（仅内存、绝不落盘），之后每次启动需**解锁**才能查看台账、执行动作与导出；`data\` 下的台账、快照、会话、动作备份与审计全部**认证加密**落盘，未解锁一律拒绝写入。
+- **加密实现**：主密码经 **PBKDF2-HMAC-SHA256（200000 次迭代、16 字节随机盐）** 派生 32 字节密钥，数据以 **AES-256-GCM（12 字节 nonce、16 字节 tag）** 加密；加密信封为单行字符串 `DESKIT1|base64(nonce)|base64(tag)|base64(ciphertext)`。**不使用任何机器绑定机制（严禁 DPAPI / ProtectedData）**，介质可跨机、跨启动使用。
+- 主密码校验值（`HMAC-SHA256(key, "DESKIT-VERIFIER-v1")`）与盐随 `data\operators.json`（明文介质头文件）保存，**该文件不保存主密码明文**；台账逐行加密写入 NDJSON，**单行损坏不影响其余行**，解密失败区分“介质未解锁”与“校验失败/数据损坏”，从不静默返回空。
+- **失败延迟**：连续解锁失败第 5 / 6 / 7 次起分别强制等待 30 / 60 / 120 秒（之后固定 120 秒），**不提供任何绕过方式**，失败计数与冷却落盘（重启后仍生效）。
+- **拔出保护**：会话期间每 10 秒探测介质可写性（写入并删除临时探测文件），不可写或介质消失时**立即停止后续动作、保留已完成结果、把会话标记为“已中断”**并明确提示；介质未解锁或不可写时禁止写入。右下角常驻**介质状态指示**与**安全移除**入口（有未结束会话时阻止移除）。
+- **自动锁定**：默认无操作 10 分钟锁定（可在“介质与设置（M8）”页调整，0 表示不锁定）；解锁后进入主界面，手动“立即锁定”随时可用。
+- **审计**：解锁成功 / 失败、导出、动作执行、报告产出、异常移除 / 会话中断、高级模式开关变化、处理人切换、临时文件清理、介质迁移等均写入 `data\audit\audit.db`（仅追加 NDJSON、经金库加密），默认保留 365 天、到期自动清理；审计事件不含任何凭证明文。
+- **介质迁移**：数据目录整体复制到新介质（主密码不变，可继续使用）时按卷序列号生成的**介质标识**差异检测并提示“已更换介质”（介质标识不参与密钥派生、不绑定机器）；目标机临时文件仅写在 `%TEMP%\DeskIT\<runId>`，程序退出时删除，失败时提示残留路径。
+- 纯规则见 [MediaModels.cs](src/DeskIT.Core/MediaModels.cs) 与 [MediaRules.cs](src/DeskIT.Core/MediaRules.cs)；加密金库见 [MediaVault.cs](src/DeskIT.Windows/MediaVault.cs)；介质头信息与设置见 [MediaStateStore.cs](src/DeskIT.Windows/MediaStateStore.cs)；拔出保护与探测见 [MediaWatchdog.cs](src/DeskIT.Windows/MediaWatchdog.cs) 与 [MediaWritabilityProbe.cs](src/DeskIT.Windows/MediaWritabilityProbe.cs)；审计见 [AuditStore.cs](src/DeskIT.Windows/AuditStore.cs)；临时目录与迁移见 [TempWorkspace.cs](src/DeskIT.Windows/TempWorkspace.cs) 与 [MediaMigration.cs](src/DeskIT.Windows/MediaMigration.cs)；界面见 [MainWindow.xaml](src/DeskIT.App/MainWindow.xaml) 的解锁 / 初始化门禁与“介质与设置（M8）”页。
 
 ## 关于需求文档
 

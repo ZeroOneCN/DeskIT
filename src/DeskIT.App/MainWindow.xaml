@@ -21,6 +21,8 @@
         <local:InstallerOutcomeToBrushConverter x:Key="InstallerOutcomeBrush" />
         <local:AccountRowToBrushConverter x:Key="AccountRowBrush" />
         <local:LedgerConclusionToBrushConverter x:Key="LedgerConclusionBrush" />
+        <local:MediaStateToBrushConverter x:Key="MediaStateBrush" />
+        <local:MediaStateToTextConverter x:Key="MediaStateText" />
         <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
 
         <Style x:Key="CardBorder" TargetType="Border">
@@ -1342,10 +1344,165 @@
                     </TabItem>
                 </TabControl>
             </TabItem>
+
+            <!-- ============ M8 介质与设置 ============ -->
+            <TabItem Header="介质与设置（M8）">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Margin="0,4,0,0">
+                    <StackPanel>
+                        <Border Style="{StaticResource CardBorder}">
+                            <StackPanel>
+                                <TextBlock Text="介质状态" Style="{StaticResource CardTitle}" />
+                                <WrapPanel>
+                                    <StackPanel Width="260" Margin="0,0,16,10">
+                                        <TextBlock Text="介质标识" Style="{StaticResource FieldName}" />
+                                        <TextBlock x:Name="SettingsMediaIdText" Style="{StaticResource FieldValue}" Text="（读取中…）" />
+                                    </StackPanel>
+                                    <StackPanel Width="300" Margin="0,0,16,10">
+                                        <TextBlock Text="数据目录" Style="{StaticResource FieldName}" />
+                                        <TextBlock x:Name="SettingsDataDirectoryText" Style="{StaticResource FieldValue}" Text="（读取中…）" />
+                                    </StackPanel>
+                                    <StackPanel Width="260" Margin="0,0,16,10">
+                                        <TextBlock Text="介质迁移" Style="{StaticResource FieldName}" />
+                                        <TextBlock x:Name="SettingsMigrationText" Style="{StaticResource FieldValue}" Text="（读取中…）" />
+                                    </StackPanel>
+                                </WrapPanel>
+                                <TextBlock Text="介质金库：主密码经 PBKDF2-HMAC-SHA256 派生密钥，数据以 AES-256-GCM 认证加密；不绑定机器，可跨机使用。"
+                                           Style="{StaticResource FieldName}" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource CardBorder}" Margin="0,12,0,0">
+                            <StackPanel>
+                                <TextBlock Text="介质设置" Style="{StaticResource CardTitle}" />
+                                <WrapPanel>
+                                    <StackPanel Width="220" Margin="0,0,16,10">
+                                        <TextBlock Text="无操作自动锁定（分钟，0 表示不自动锁定）" Style="{StaticResource FieldName}" />
+                                        <TextBox x:Name="SettingsAutoLockBox" Height="28" />
+                                    </StackPanel>
+                                    <StackPanel Width="240" Margin="0,0,16,10">
+                                        <TextBlock Text="界面脱敏（投屏 / 示教场景）" Style="{StaticResource FieldName}" />
+                                        <CheckBox x:Name="SettingsDesensitizeCheck" Content="开启界面脱敏" Height="28" />
+                                    </StackPanel>
+                                </WrapPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                                    <Button Content="保存设置" Height="30" Padding="14,0" Click="OnSaveSettingsClick" />
+                                    <Button Content="立即锁定介质" Height="30" Padding="14,0" Margin="10,0,0,0" Click="OnLockMediaClick" />
+                                </StackPanel>
+                                <TextBlock x:Name="SettingsMessageText" Style="{StaticResource FieldName}" Margin="0,8,0,0" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource CardBorder}" Margin="0,12,0,0">
+                            <StackPanel>
+                                <TextBlock Text="高级模式（需主密码 + 二次确认）" Style="{StaticResource CardTitle}" />
+                                <TextBlock x:Name="SettingsAdvancedStateText" Style="{StaticResource FieldValue}" Text="（读取中…）" />
+                                <StackPanel Width="280" HorizontalAlignment="Left" Margin="0,8,0,0">
+                                    <TextBlock Text="主密码（用于验证身份，仅内存使用）" Style="{StaticResource FieldName}" />
+                                    <PasswordBox x:Name="SettingsPasswordBox" Height="28" />
+                                </StackPanel>
+                                <Button x:Name="SettingsAdvancedButton" Content="开启高级模式" Height="30" Padding="14,0"
+                                        HorizontalAlignment="Left" Margin="0,10,0,0" Click="OnToggleAdvancedFromSettingsClick" />
+                                <TextBlock x:Name="SettingsAdvancedMessageText" Style="{StaticResource FieldName}" Margin="0,8,0,0" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource CardBorder}" Margin="0,12,0,0">
+                            <StackPanel>
+                                <TextBlock Text="处理人切换（二次确认 + 审计）" Style="{StaticResource CardTitle}" />
+                                <TextBlock x:Name="SettingsOperatorText" Style="{StaticResource FieldValue}" Text="（读取中…）" />
+                                <StackPanel Width="280" HorizontalAlignment="Left" Margin="0,8,0,0">
+                                    <TextBlock Text="已登记处理人（在“记录与台账（M7）”登记新处理人）" Style="{StaticResource FieldName}" />
+                                    <ComboBox x:Name="SettingsOperatorCombo" Height="28" />
+                                </StackPanel>
+                                <Button Content="切换为所选处理人" Height="30" Padding="14,0"
+                                        HorizontalAlignment="Left" Margin="0,10,0,0" Click="OnSwitchOperatorClick" />
+                                <TextBlock x:Name="SettingsOperatorMessageText" Style="{StaticResource FieldName}" Margin="0,8,0,0" />
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
         </TabControl>
 
-        <TextBlock x:Name="FooterStatus" Grid.Row="3" Margin="0,12,0,0"
-                   Foreground="#6B7280" FontSize="12" TextWrapping="Wrap"
-                   Text="正在执行启动自检…" />
+        <!-- 页脚：常驻介质可写状态指示 + 安全移除入口 -->
+        <Grid Grid.Row="3" Margin="0,12,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <TextBlock x:Name="FooterStatus" Grid.Column="0" VerticalAlignment="Center"
+                       Foreground="#6B7280" FontSize="12" TextWrapping="Wrap"
+                       Text="正在执行启动自检…" />
+            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="16,0,0,0">
+                <Border x:Name="MediaStatusPill" CornerRadius="10" Padding="10,4"
+                        Background="{Binding Path=Tag, RelativeSource={RelativeSource Self}, Converter={StaticResource MediaStateBrush}}">
+                    <TextBlock x:Name="MediaStatusText" FontSize="12" Foreground="White"
+                               Text="{Binding Path=Tag, RelativeSource={RelativeSource Self}, Converter={StaticResource MediaStateText}}" />
+                </Border>
+                <Button x:Name="SafeEjectButton" Content="安全移除介质" Height="28" Padding="12,0" Margin="10,0,0,0"
+                        Click="OnSafeEjectClick" />
+            </StackPanel>
+        </Grid>
+
+        <!-- 介质门禁：未初始化 / 未解锁时覆盖整个窗口 -->
+        <Grid x:Name="MediaGate" Grid.Row="0" Grid.RowSpan="4" Background="#E6F3F4F6" Visibility="Collapsed">
+            <Border Style="{StaticResource CardBorder}" Width="580" Padding="22"
+                    HorizontalAlignment="Center" VerticalAlignment="Center">
+                <StackPanel>
+                    <TextBlock Text="介质安全（M8）" FontSize="18" FontWeight="Bold" Foreground="#111827" />
+                    <TextBlock x:Name="MediaGateSummaryText" Style="{StaticResource FieldName}" Margin="0,6,0,14" TextWrapping="Wrap" />
+
+                    <!-- 初始化向导 -->
+                    <StackPanel x:Name="MediaInitPanel" Visibility="Collapsed">
+                        <TextBlock Text="首次使用：设置主密码并登记处理人（一次性设置，随介质保存）"
+                                   FontWeight="SemiBold" FontSize="13" Foreground="#111827" />
+                        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                            <StackPanel Width="240" Margin="0,0,16,0">
+                                <TextBlock Text="处理人工号" Style="{StaticResource FieldName}" />
+                                <TextBox x:Name="InitOperatorIdBox" Height="28" />
+                            </StackPanel>
+                            <StackPanel Width="240">
+                                <TextBlock Text="处理人姓名" Style="{StaticResource FieldName}" />
+                                <TextBox x:Name="InitOperatorNameBox" Height="28" />
+                            </StackPanel>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                            <StackPanel Width="240" Margin="0,0,16,0">
+                                <TextBlock Text="主密码（至少 8 位，不含空白）" Style="{StaticResource FieldName}" />
+                                <PasswordBox x:Name="InitPasswordBox" Height="28" />
+                            </StackPanel>
+                            <StackPanel Width="240">
+                                <TextBlock Text="再次输入主密码" Style="{StaticResource FieldName}" />
+                                <PasswordBox x:Name="InitPasswordConfirmBox" Height="28" />
+                            </StackPanel>
+                        </StackPanel>
+                        <CheckBox x:Name="InitConfirmCheck" Margin="0,12,0,0"
+                                  Content="我已了解：忘记主密码将无法恢复数据" />
+                        <TextBlock x:Name="InitForgetWarningText" Margin="0,8,0,0" FontSize="12"
+                                   Foreground="#B91C1C" TextWrapping="Wrap" />
+                        <Button x:Name="InitializeMediaButton" Content="初始化介质并解锁" Height="32" Padding="16,0"
+                                HorizontalAlignment="Left" Margin="0,12,0,0" Click="OnInitializeMediaClick" />
+                        <TextBlock x:Name="InitMessageText" Style="{StaticResource FieldName}" Margin="0,8,0,0" TextWrapping="Wrap" />
+                    </StackPanel>
+
+                    <!-- 解锁面板 -->
+                    <StackPanel x:Name="MediaUnlockPanel" Visibility="Collapsed">
+                        <TextBlock x:Name="UnlockMediaIdText" Style="{StaticResource FieldValue}" />
+                        <TextBlock x:Name="MigrationNoticeText" Margin="0,6,0,0" FontSize="12"
+                                   Foreground="#B45309" TextWrapping="Wrap" Visibility="Collapsed" />
+                        <TextBlock x:Name="UnlockFailedText" Style="{StaticResource FieldName}" Margin="0,8,0,0" />
+                        <StackPanel Width="300" HorizontalAlignment="Left" Margin="0,10,0,0">
+                            <TextBlock Text="主密码" Style="{StaticResource FieldName}" />
+                            <PasswordBox x:Name="UnlockPasswordBox" Height="30"
+                                         KeyDown="OnUnlockPasswordKeyDown" />
+                        </StackPanel>
+                        <TextBlock x:Name="UnlockCooldownText" FontSize="12" Foreground="#B91C1C"
+                                   Margin="0,8,0,0" TextWrapping="Wrap" />
+                        <Button x:Name="UnlockButton" Content="解锁介质" Height="32" Padding="16,0"
+                                HorizontalAlignment="Left" Margin="0,12,0,0" Click="OnUnlockMediaClick" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+        </Grid>
     </Grid>
 </Window>

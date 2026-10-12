@@ -34,6 +34,7 @@ public sealed class ActionExecutor : IActionExecutor
     private readonly IPowerShellExecutor _powerShell;
     private readonly IActionPreconditionChecker _preconditionChecker;
     private readonly IActionBackupStore _backupStore;
+    private readonly IMediaVault? _vault;
     private readonly Func<DateTimeOffset> _clock;
 
     /// <summary>
@@ -42,16 +43,19 @@ public sealed class ActionExecutor : IActionExecutor
     /// <param name="powerShell">PowerShell 5.1 执行器；为 null 时使用内置实现。</param>
     /// <param name="preconditionChecker">前置条件检查器；为 null 时使用 Windows 实现。</param>
     /// <param name="backupStore">备份区存储；为 null 时使用文件实现。</param>
+    /// <param name="vault">介质金库（用于加密脚本产出的回滚原始数据文件）；可为 null。</param>
     /// <param name="clock">时间源，便于测试；为 null 时使用本地当前时间。</param>
     public ActionExecutor(
         IPowerShellExecutor? powerShell = null,
         IActionPreconditionChecker? preconditionChecker = null,
         IActionBackupStore? backupStore = null,
+        IMediaVault? vault = null,
         Func<DateTimeOffset>? clock = null)
     {
         _powerShell = powerShell ?? new PowerShell51Executor();
         _preconditionChecker = preconditionChecker ?? new ActionPreconditionChecker();
-        _backupStore = backupStore ?? new ActionBackupStore();
+        _backupStore = backupStore ?? new ActionBackupStore(vault);
+        _vault = vault;
         _clock = clock ?? (() => DateTimeOffset.Now);
     }
 
@@ -119,9 +123,33 @@ public sealed class ActionExecutor : IActionExecutor
             null,
             ToValues(declared));
 
+        // 备份区内容经介质金库加密：脚本产出的回滚原始数据文件在落盘后整文件加密。
+        ProtectRollbackFile(rollbackDataFile);
+
         Persist(dataDirectory, action, result, sessionId, executedAt, runId, rollbackDataFile);
 
         return result;
+    }
+
+    /// <summary>
+    /// 把脚本产出的回滚原始数据文件整文件加密；未配置金库或加密失败时保持原文件（不影响动作结果）。
+    /// </summary>
+    /// <param name="rollbackDataFile">回滚原始数据文件路径。</param>
+    private void ProtectRollbackFile(string rollbackDataFile)
+    {
+        if (_vault is null || !File.Exists(rollbackDataFile))
+        {
+            return;
+        }
+
+        try
+        {
+            _vault.ProtectFile(rollbackDataFile);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or MediaLockedException)
+        {
+            // 备份区加密失败不影响动作本身：结果已如实反映执行情况。
+        }
     }
 
     /// <summary>
