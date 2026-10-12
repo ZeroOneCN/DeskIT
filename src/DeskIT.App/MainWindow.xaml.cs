@@ -78,6 +78,13 @@ public partial class MainWindow : Window
     private StartupVerdict? _verdict;
     private bool _activationNoticeShown;
 
+    /// <summary>
+    /// 界面是否已完成初始化（构造函数末尾置为 true）。
+    /// XAML 解析期间（InitializeComponent）控件会把默认值变更事件一并触发，
+    /// 此时后面的具名控件字段仍为 null；各事件处理函数据此提前返回，避免启动即崩溃。
+    /// </summary>
+    private bool _viewReady;
+
     // ═══════════════════ M8 介质安全与数据保护 ═══════════════════
     private MediaSettings _mediaSettings = new();
     private MediaState _mediaState = MediaState.NotInitialized;
@@ -195,6 +202,9 @@ public partial class MainWindow : Window
         PreviewKeyDown += OnUserKeyActivity;
         InitForgetWarningText.Text = MediaRules.DescribeForgetWarning();
         _autoLockTimer.Start();
+
+        // 界面元素已全部就绪：此后才允许事件处理函数操作具名控件。
+        _viewReady = true;
     }
 
     /// <summary>窗口加载后执行启动自检并初始化介质门禁（未初始化 / 未解锁前覆盖全窗口）。</summary>
@@ -2105,7 +2115,8 @@ public partial class MainWindow : Window
     /// <param name="e">事件参数。</param>
     private void OnMainTabChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (!ReferenceEquals(e.OriginalSource, MainTabs))
+        // XAML 解析阶段 TabControl 会为默认选中项触发一次本事件，此时界面尚未初始化完毕。
+        if (!_viewReady || !ReferenceEquals(e.OriginalSource, MainTabs))
         {
             return;
         }
@@ -2291,13 +2302,26 @@ public partial class MainWindow : Window
     /// <summary>已装软件搜索框文本变化时重新过滤清单。</summary>
     /// <param name="sender">事件源。</param>
     /// <param name="e">事件参数。</param>
-    private void OnInstalledSearchChanged(object sender, TextChangedEventArgs e) => ApplyInstalledFilter();
+    private void OnInstalledSearchChanged(object sender, TextChangedEventArgs e)
+    {
+        if (!_viewReady)
+        {
+            return;
+        }
+
+        ApplyInstalledFilter();
+    }
 
     /// <summary>软件包列表选中项变化时刷新操作区与执行前检查预览。</summary>
     /// <param name="sender">事件源。</param>
     /// <param name="e">事件参数。</param>
     private void OnPackageSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        if (!_viewReady)
+        {
+            return;
+        }
+
         _selectedPackage = PackageList.SelectedItem as PackageItemView;
         UpdatePackageOperationText();
     }
@@ -2305,7 +2329,16 @@ public partial class MainWindow : Window
     /// <summary>操作类型（安装 / 升级 / 卸载）切换时重新计算执行前检查预览。</summary>
     /// <param name="sender">事件源。</param>
     /// <param name="e">事件参数。</param>
-    private void OnPackageOperationChanged(object sender, RoutedEventArgs e) => UpdatePackageOperationText();
+    private void OnPackageOperationChanged(object sender, RoutedEventArgs e)
+    {
+        // XAML 解析阶段 RadioButton 的默认选中会触发本事件，此时操作区控件尚未创建。
+        if (!_viewReady)
+        {
+            return;
+        }
+
+        UpdatePackageOperationText();
+    }
 
     /// <summary>读取当前选中的操作类型。</summary>
     /// <returns>操作类型（安装 / 升级 / 卸载）。</returns>
@@ -2912,6 +2945,12 @@ public partial class MainWindow : Window
     /// <param name="e">事件参数。</param>
     private void OnLedgerConclusionChanged(object sender, RoutedEventArgs e)
     {
+        // XAML 解析阶段“已解决”单选按钮的默认选中会触发本事件。
+        if (!_viewReady)
+        {
+            return;
+        }
+
         LedgerUnresolvedPanel.Visibility = LedgerConclusionUnresolvedRadio.IsChecked == true
             ? Visibility.Visible
             : Visibility.Collapsed;
@@ -2920,13 +2959,28 @@ public partial class MainWindow : Window
     /// <summary>问题类别变化：刷新历史沿用提示。</summary>
     /// <param name="sender">事件源。</param>
     /// <param name="e">事件参数。</param>
-    private void OnLedgerCategoryChanged(object sender, SelectionChangedEventArgs e) => UpdateLedgerReuseHint();
+    private void OnLedgerCategoryChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!_viewReady)
+        {
+            return;
+        }
+
+        UpdateLedgerReuseHint();
+    }
 
     /// <summary>员工现象描述变化：刷新字数计数。</summary>
     /// <param name="sender">事件源。</param>
     /// <param name="e">事件参数。</param>
     private void OnSymptomChanged(object sender, TextChangedEventArgs e)
-        => LedgerSymptomCountText.Text = $"{LedgerSymptomBox.Text.Length} / {LedgerRules.SymptomMaxLength}";
+    {
+        if (!_viewReady)
+        {
+            return;
+        }
+
+        LedgerSymptomCountText.Text = $"{LedgerSymptomBox.Text.Length} / {LedgerRules.SymptomMaxLength}";
+    }
 
     /// <summary>点击“查看上次处理”：切换到“目标机档案”子页查看本机历史记录。</summary>
     /// <param name="sender">事件源。</param>
@@ -3328,7 +3382,14 @@ public partial class MainWindow : Window
     /// <param name="sender">事件源。</param>
     /// <param name="e">事件参数。</param>
     private void OnLedgerMachineSelectionChanged(object sender, SelectionChangedEventArgs e)
-        => LedgerRecordList.ItemsSource = (LedgerMachineList.SelectedItem as LedgerMachineView)?.Records;
+    {
+        if (!_viewReady)
+        {
+            return;
+        }
+
+        LedgerRecordList.ItemsSource = (LedgerMachineList.SelectedItem as LedgerMachineView)?.Records;
+    }
 
     /// <summary>点击“导出…”：按选定范围与格式导出台账或单条记录报告。</summary>
     /// <param name="sender">事件源。</param>
@@ -3570,6 +3631,11 @@ public partial class MainWindow : Window
     /// <param name="e">事件参数。</param>
     private void OnCustomMultilineChanged(object sender, RoutedEventArgs e)
     {
+        if (!_viewReady)
+        {
+            return;
+        }
+
         var multiline = CustomMultilineCheck.IsChecked == true;
         CustomCommandBox.AcceptsReturn = multiline;
         CustomCommandBox.TextWrapping = multiline ? TextWrapping.Wrap : TextWrapping.NoWrap;
