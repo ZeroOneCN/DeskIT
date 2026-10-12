@@ -5,18 +5,151 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:DeskIT.App"
         mc:Ignorable="d"
-        Title="DeskIT" Height="360" Width="640" WindowStartupLocation="CenterScreen">
-    <Grid Margin="24">
-        <StackPanel>
-            <TextBlock Text="DeskIT" FontSize="26" FontWeight="Bold" />
-            <TextBlock Text="Windows 桌面 IT 运维工具（U 盘便携版）"
-                       FontSize="13" Foreground="Gray" Margin="0,4,0,0" />
-            <TextBlock Text="工程骨架已就绪"
-                       FontSize="20" FontWeight="SemiBold" Margin="0,28,0,0" />
-            <TextBlock x:Name="PermissionHintText"
-                       FontSize="14" Foreground="#444" TextWrapping="Wrap" Margin="0,12,0,0" />
-            <TextBlock Text="本阶段仅验证工程结构与构建链路，尚未实现任何诊断或修复功能。"
-                       FontSize="12" Foreground="Gray" TextWrapping="Wrap" Margin="0,24,0,0" />
+        Title="DeskIT 便携启动" Height="620" Width="980"
+        MinHeight="520" MinWidth="820"
+        WindowStartupLocation="CenterScreen"
+        TextOptions.TextFormattingMode="Display">
+    <Window.Resources>
+        <local:SelfCheckOutcomeToBrushConverter x:Key="OutcomeBrush" />
+        <local:SelfCheckOutcomeToTextConverter x:Key="OutcomeText" />
+
+        <Style x:Key="CardBorder" TargetType="Border">
+            <Setter Property="Background" Value="White" />
+            <Setter Property="BorderBrush" Value="#E5E7EB" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="Padding" Value="14" />
+        </Style>
+
+        <Style x:Key="CardTitle" TargetType="TextBlock">
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="Foreground" Value="#111827" />
+            <Setter Property="Margin" Value="0,0,0,8" />
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="18">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- 顶部：标题与常驻状态 -->
+        <StackPanel Grid.Row="0">
+            <TextBlock Text="DeskIT" FontSize="24" FontWeight="Bold" Foreground="#111827" />
+            <TextBlock Text="Windows 桌面 IT 运维工具（U 盘便携版）· 便携启动与运行环境"
+                       FontSize="12" Foreground="#6B7280" Margin="0,2,0,0" />
+            <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                <Border Background="#EEF2FF" CornerRadius="10" Padding="10,4">
+                    <TextBlock x:Name="PrivilegePill" FontSize="12" Foreground="#1D4ED8" Text="权限：检测中…" />
+                </Border>
+                <Border Background="#F3F4F6" CornerRadius="10" Padding="10,4" Margin="8,0,0,0">
+                    <TextBlock x:Name="AdvancedPill" FontSize="12" Foreground="#374151" Text="高级模式：关闭" />
+                </Border>
+            </StackPanel>
         </StackPanel>
+
+        <!-- 受限启动 / 阻断原因横幅 -->
+        <Border x:Name="Banner" Grid.Row="1" Visibility="Collapsed"
+                Background="#FEF2F2" BorderBrush="#FECACA" BorderThickness="1"
+                CornerRadius="6" Padding="12" Margin="0,12,0,0">
+            <TextBlock x:Name="BannerText" Foreground="#B91C1C" TextWrapping="Wrap" />
+        </Border>
+
+        <!-- 主体：左自检结果 / 右权限与能力 -->
+        <Grid Grid.Row="2" Margin="0,14,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="380" />
+            </Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0" Style="{StaticResource CardBorder}" Margin="0,0,14,0">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Style="{StaticResource CardTitle}" Text="启动自检结果" />
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <ItemsControl x:Name="SelfCheckList">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border BorderBrush="#F3F4F6" BorderThickness="0,0,0,1" Padding="0,9">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0">
+                                                <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="13" />
+                                                <TextBlock Text="{Binding Detail}" Foreground="#6B7280" FontSize="12"
+                                                           TextWrapping="Wrap" Margin="0,2,10,0" />
+                                            </StackPanel>
+                                            <Border Grid.Column="1" VerticalAlignment="Top" CornerRadius="10" Padding="9,3"
+                                                    Background="{Binding Outcome, Converter={StaticResource OutcomeBrush}}">
+                                                <TextBlock FontSize="11" Foreground="White"
+                                                           Text="{Binding Outcome, Converter={StaticResource OutcomeText}}" />
+                                            </Border>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </DockPanel>
+            </Border>
+
+            <StackPanel Grid.Column="1">
+                <Border Style="{StaticResource CardBorder}">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource CardTitle}" Text="当前权限与提权" />
+                        <TextBlock x:Name="PrivilegeHint" Foreground="#374151" FontSize="12"
+                                   TextWrapping="Wrap" Margin="0,0,0,10" />
+                        <Button x:Name="ElevateButton" Content="以管理员身份重新启动"
+                                Height="34" Click="OnElevateClick" />
+                        <Button x:Name="ReadOnlyButton" Content="继续只读诊断模式"
+                                Height="34" Margin="0,8,0,0" Click="OnReadOnlyClick" />
+                        <TextBlock Foreground="#9CA3AF" FontSize="11" TextWrapping="Wrap" Margin="0,10,0,0"
+                                   Text="提权走系统标准 UAC 流程，不尝试绕过；取消 UAC 后回到只读诊断模式，不报错、不重试。" />
+
+                        <Separator Margin="0,12,0,10" />
+                        <TextBlock Style="{StaticResource CardTitle}" Text="高级模式（介质级记住）" />
+                        <TextBlock x:Name="AdvancedHint" Foreground="#374151" FontSize="12"
+                                   TextWrapping="Wrap" Margin="0,0,0,8" />
+                        <Button x:Name="AdvancedButton" Content="开启高级模式"
+                                Height="32" Click="OnToggleAdvancedClick" />
+                        <TextBlock Foreground="#9CA3AF" FontSize="11" TextWrapping="Wrap" Margin="0,8,0,0"
+                                   Text="高级模式用于启用受控自定义命令（M9）；需管理员模式 + 主密码验证 + 二次确认，可随时关闭（关闭不需密码）。" />
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource CardBorder}" Margin="0,12,0,0">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource CardTitle}" Text="本次可做什么（能力摘要）" />
+                        <ItemsControl x:Name="CapabilityList">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding}" FontSize="12" Foreground="#374151"
+                                               TextWrapping="Wrap" Margin="0,2" />
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                        <TextBlock x:Name="RestrictionTitle" Foreground="#B45309" FontWeight="SemiBold"
+                                   FontSize="12" Margin="0,10,0,4" Visibility="Collapsed" Text="受限原因" />
+                        <ItemsControl x:Name="RestrictionList">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding}" FontSize="12" Foreground="#B45309"
+                                               TextWrapping="Wrap" Margin="0,2" />
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </Grid>
+
+        <TextBlock x:Name="FooterStatus" Grid.Row="3" Margin="0,12,0,0"
+                   Foreground="#6B7280" FontSize="12" TextWrapping="Wrap"
+                   Text="正在执行启动自检…" />
     </Grid>
 </Window>

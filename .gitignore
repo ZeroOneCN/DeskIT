@@ -3,5 +3,6 @@ obj/
 .vs/
 *.user
 publish/
+artifacts/
 .dotnet/
 TestResults/

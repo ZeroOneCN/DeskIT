@@ -20,6 +20,8 @@ DeskIT/
 ├─ docs/
 │  ├─ DESIGN_DeskIT.md    总体架构与实现约束
 │  └─ TASK_DeskIT.md      原子任务分解（步骤 2 ~ 步骤 9）
+├─ tools/
+│  └─ Generate-Manifest.ps1  为发布目录生成 manifest.json（完整性自检清单）
 ├─ src/
 │  ├─ DeskIT.App/         WPF 界面外壳（App 层）
 │  ├─ DeskIT.Core/        领域模型与纯逻辑规则（不依赖 Windows API）
@@ -46,6 +48,25 @@ dotnet publish src\DeskIT.App\DeskIT.App.csproj -c Release -p:DeskITPortable=tru
 ```
 
 > 发布相关的 `RuntimeIdentifier / SelfContained / PublishSingleFile` 仅在传入 `-p:DeskITPortable=true` 时生效，不会影响 `dotnet build` 的行为与输出。
+
+生成完整性自检清单（发布后执行，清单需与可执行文件同目录）：
+
+```powershell
+dotnet publish src\DeskIT.App\DeskIT.App.csproj -c Release -p:DeskITPortable=true -o .\artifacts\publish
+powershell -ExecutionPolicy Bypass -File tools\Generate-Manifest.ps1 -PublishDirectory .\artifacts\publish -Version 1.0.0
+```
+
+## 已实现模块
+
+| 步骤 | 模块 | 状态 |
+|------|------|------|
+| 1 | 工程骨架（.NET 8 + WPF + xUnit） | 已完成 |
+| 2 | M1 便携启动与运行环境 | 已完成 |
+
+**M1（步骤 2）**：启动页呈现三块内容——启动自检结果（程序完整性、数据目录可写、介质可用空间、目标系统版本、当前权限、并发实例）、当前权限与提权入口（管理员提权 / 只读回退）、本次能力摘要；并实现高级模式的介质级开关（随 `data/operators.json` 保存，开启需二次确认）。
+- 判定规则集中在 [StartupRules.cs](src/DeskIT.Core/StartupRules.cs)（纯逻辑、可单测）：空间 200 MB / 500 MB 阈值、系统版本支持范围、完整性结论、能力推导。
+- Windows 能力封装见 [src/DeskIT.Windows](src/DeskIT.Windows)：权限检测、提权启动、单实例守卫、完整性校验、目录读写探测、卷空间、系统版本（`RtlGetVersion`）。
+- 高级模式开关的主密码验证将在介质加密（M8）落地后接入。
 
 ## 关于需求文档
 

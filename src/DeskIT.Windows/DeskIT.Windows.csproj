@@ -6,4 +6,8 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\DeskIT.Core\DeskIT.Core.csproj" />
+  </ItemGroup>
+
 </Project>
