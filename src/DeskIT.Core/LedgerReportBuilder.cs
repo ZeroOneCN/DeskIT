@@ -97,6 +97,7 @@ public static class LedgerReportBuilder
         BuildHtmlDiagnosis(builder, source, summary);
         BuildHtmlActions(builder, source);
         BuildHtmlCustomCommands(builder, source);
+        BuildHtmlPersistence(builder, source);
         BuildHtmlConclusion(builder, source);
         BuildHtmlSupplements(builder, source);
 
@@ -221,6 +222,26 @@ public static class LedgerReportBuilder
                     .Append(" | ").Append(command.ExitCode.ToString(CultureInfo.InvariantCulture))
                     .Append(" | ").Append(command.DurationSeconds.ToString("0.0", CultureInfo.InvariantCulture))
                     .Append(" | ").Append(EscapeCell(OneLine(command.OutputSummary)))
+                    .Append(" |").AppendLine();
+            }
+        }
+
+        builder.AppendLine();
+        builder.Append("## 处理后系统持久化变更（").Append(source.PersistenceChanges.Count).Append(" 类）").AppendLine();
+        builder.AppendLine();
+        if (source.PersistenceChanges.Count == 0)
+        {
+            builder.AppendLine("（本次未检测到持久化变更。）");
+        }
+        else
+        {
+            builder.Append("| 类型 | 变更 | 明细 |").AppendLine();
+            builder.Append("| --- | --- | --- |").AppendLine();
+            foreach (var change in source.PersistenceChanges)
+            {
+                builder.Append("| ").Append(EscapeCell(CustomCommandRules.DescribePersistenceKind(change.Kind)))
+                    .Append(" | ").Append(EscapeCell(DescribePersistenceChange(change)))
+                    .Append(" | ").Append(EscapeCell(DescribePersistenceDetail(change)))
                     .Append(" |").AppendLine();
             }
         }
@@ -391,6 +412,32 @@ public static class LedgerReportBuilder
         builder.AppendLine("</tbody></table></section>");
     }
 
+    /// <summary>生成“处理后系统持久化变更”HTML 段（M9：自定义命令执行前后对比服务 / 计划任务 / 自启动项）。</summary>
+    /// <param name="builder">输出缓冲。</param>
+    /// <param name="record">处理记录。</param>
+    private static void BuildHtmlPersistence(StringBuilder builder, HandlingRecord record)
+    {
+        builder.Append("<section><h2>处理后系统持久化变更（").Append(record.PersistenceChanges.Count).AppendLine(" 类）</h2>");
+        if (record.PersistenceChanges.Count == 0)
+        {
+            builder.AppendLine("<p class=\"muted\">本次未检测到持久化变更（未使用自定义命令或前后无差异）。</p>");
+        }
+        else
+        {
+            builder.AppendLine("<table><thead><tr><th>类型</th><th>变更</th><th>明细</th></tr></thead><tbody>");
+            foreach (var change in record.PersistenceChanges)
+            {
+                builder.Append("<tr><td>").Append(Encode(CustomCommandRules.DescribePersistenceKind(change.Kind)))
+                    .Append("</td><td>").Append(Encode(DescribePersistenceChange(change)))
+                    .Append("</td><td>").Append(Encode(DescribePersistenceDetail(change))).AppendLine("</td></tr>");
+            }
+
+            builder.AppendLine("</tbody></table>");
+        }
+
+        builder.AppendLine("</section>");
+    }
+
     /// <summary>生成“结论与原因”HTML 段。</summary>
     /// <param name="builder">输出缓冲。</param>
     /// <param name="record">处理记录。</param>
@@ -433,6 +480,43 @@ public static class LedgerReportBuilder
         }
 
         builder.AppendLine("</section>");
+    }
+
+    /// <summary>把一类持久化变更概括为“新增 N 项 / 移除 N 项”或“未知”。</summary>
+    /// <param name="change">持久化变更。</param>
+    /// <returns>概括文本。</returns>
+    private static string DescribePersistenceChange(PersistenceChange change)
+        => change.IsUnknown
+            ? "未知"
+            : $"新增 {change.Added.Count} 项 / 移除 {change.Removed.Count} 项";
+
+    /// <summary>列出持久化变更的明细（新增与移除的项名）。</summary>
+    /// <param name="change">持久化变更。</param>
+    /// <returns>明细文本。</returns>
+    private static string DescribePersistenceDetail(PersistenceChange change)
+    {
+        if (change.IsUnknown)
+        {
+            return string.IsNullOrWhiteSpace(change.Note) ? "（采集失败，无法判定）" : change.Note;
+        }
+
+        if (!change.HasChanges)
+        {
+            return "（无变化）";
+        }
+
+        var parts = new List<string>();
+        if (change.Added.Count > 0)
+        {
+            parts.Add("新增：" + string.Join("、", change.Added));
+        }
+
+        if (change.Removed.Count > 0)
+        {
+            parts.Add("移除：" + string.Join("、", change.Removed));
+        }
+
+        return string.Join("；", parts);
     }
 
     /// <summary>追加一个封面的“名称 / 取值”元数据项。</summary>

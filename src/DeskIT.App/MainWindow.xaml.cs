@@ -105,6 +105,19 @@ public partial class MainWindow : Window
     private bool _ledgerLoaded;
     private bool _ledgerBusy;
 
+    // ═══════════════════ M9 受控自定义命令与动作沉淀 ═══════════════════
+    private readonly ICustomCommandStore _customCommandStore;
+    private readonly ICustomCommandService _customCommandService;
+    private readonly IActionSedimentStore _actionSedimentStore = new ActionSedimentStore();
+    private readonly ObservableCollection<CustomCommandHistoryView> _customHistory = new();
+    private readonly List<CustomCommandRecord> _rawCustomCommands = new();
+    private readonly List<PersistenceChange> _rawPersistenceChanges = new();
+    private CancellationTokenSource? _customCommandCancellation;
+    private bool _customCommandRunning;
+    private bool _customCommandRecordingDisabled;
+    private bool _customHistoryLoaded;
+    private string? _pendingCustomCommand;
+
     /// <summary>
     /// 初始化主窗口。
     /// </summary>
@@ -148,10 +161,18 @@ public partial class MainWindow : Window
             _snapshotStore);
         _packageService = new PackageService(actionExecutor: _actionExecutor);
 
+        // M9：受控自定义命令执行与强制记录（命令历史加密追加 + 审计事件）；用于执行前后比对持久化项差异。
+        _customCommandStore = new CustomCommandStore(_vault);
+        _customCommandService = new CustomCommandService(
+            store: _customCommandStore,
+            auditStore: _auditStore,
+            probe: new PersistenceProbe());
+
         InitializeComponent();
 
         ActionResultList.ItemsSource = _actionResults;
         PackageResultList.ItemsSource = _packageResults;
+        CustomHistoryList.ItemsSource = _customHistory;
 
         // M7：结论 / 类别 / 未解决原因 / 导出选项为静态清单，构造时即填充，避免进入页签时闪空。
         LedgerCategoryCombo.ItemsSource = LedgerViewFactory.BuildCategoryOptions();
@@ -199,6 +220,7 @@ public partial class MainWindow : Window
         _actionCancellation?.Cancel();
         _packageCancellation?.Cancel();
         _accountCancellation?.Cancel();
+        _customCommandCancellation?.Cancel();
 
         // 退出时清理目标机临时工作目录（PRD 7.4）；清理结果记入审计（介质已锁定时静默跳过）。
         try
@@ -475,6 +497,11 @@ public partial class MainWindow : Window
         {
             EnsureLedgerLoaded();
         }
+        else if (MainTabs.SelectedIndex == 8)
+        {
+            RefreshCustomCommandAvailability();
+            EnsureCustomHistoryLoaded();
+        }
     }
 
     /// <summary>锁定介质并把窗口切回解锁门禁（自动锁定、手动锁定、安全移除共用）。</summary>
@@ -499,6 +526,7 @@ public partial class MainWindow : Window
         MediaGate.Visibility = Visibility.Visible;
         RefreshMediaStatus();
         FooterStatus.Text = message;
+        RefreshCustomCommandAvailability();
     }
 
     /// <summary>点击“立即锁定介质”：主动锁定并回到解锁门禁。</summary>
@@ -689,7 +717,7 @@ public partial class MainWindow : Window
             return SessionState.Diagnosing;
         }
 
-        if (_acting || _packaging)
+        if (_acting || _packaging || _customCommandRunning)
         {
             return SessionState.Acting;
         }
@@ -1029,6 +1057,7 @@ public partial class MainWindow : Window
 
         UpdatePackageAvailability();
         UpdateAccountAvailability();
+        RefreshCustomCommandAvailability();
     }
 
     /// <summary>生成带勾选标记的能力条目文本。</summary>
@@ -2095,6 +2124,12 @@ public partial class MainWindow : Window
             // M8：进入“介质与设置”页时刷新介质状态、设置、高级模式与处理人。
             RefreshSettingsView();
         }
+        else if (MainTabs.SelectedIndex == 8)
+        {
+            // M9：进入“自定义命令”页时刷新入口可用性并按需加载命令历史（避免拖慢启动）。
+            RefreshCustomCommandAvailability();
+            EnsureCustomHistoryLoaded();
+        }
     }
 
     /// <summary>
@@ -2704,6 +2739,8 @@ public partial class MainWindow : Window
         _ledgerSessionId = DiagnosisRules.NewSessionId(startedAt);
         _ledgerScenes = Array.Empty<DiagnosisSceneResult>();
         _rawActionResults.Clear();
+        _rawCustomCommands.Clear();
+        _rawPersistenceChanges.Clear();
         _ledgerSessionActive = true;
     }
 
@@ -3027,7 +3064,8 @@ public partial class MainWindow : Window
             SymptomDescription = LedgerSymptomBox.Text.Trim(),
             Scenes = _ledgerScenes,
             Actions = _rawActionResults.Select(LedgerActionEntry.FromExecution).ToList(),
-            CustomCommands = Array.Empty<LedgerCustomCommandEntry>(),
+            CustomCommands = _rawCustomCommands.Select(record => record.ToLedgerEntry()).ToList(),
+            PersistenceChanges = _rawPersistenceChanges.ToList(),
             Conclusion = conclusion,
             UnresolvedReason = reason,
             UnresolvedNote = LedgerUnresolvedNoteBox.Text.Trim(),
@@ -3142,6 +3180,8 @@ public partial class MainWindow : Window
         _ledgerSessionStartedAt = null;
         _ledgerScenes = Array.Empty<DiagnosisSceneResult>();
         _rawActionResults.Clear();
+        _rawCustomCommands.Clear();
+        _rawPersistenceChanges.Clear();
 
         LedgerSymptomBox.Clear();
         LedgerTagsBox.Clear();
@@ -3475,4 +3515,605 @@ public partial class MainWindow : Window
             MessageBox.Show($"无法打开：{ex.Message}", "DeskIT", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
+
+    // ═══════════════════ M9 受控自定义命令与动作沉淀（接线） ═══════════════════
+
+    /// <summary>下拉选项：以中文文本展示任意取值（用于沉淀弹窗的枚举与三态选择）。</summary>
+    /// <typeparam name="T">取值类型。</typeparam>
+    private sealed record ChoiceOption<T>(string Text, T Value)
+    {
+        /// <summary>返回中文展示文本（供下拉列表直接显示）。</summary>
+        /// <returns>中文文本。</returns>
+        public override string ToString() => Text;
+    }
+
+    /// <summary>按当前运行条件评估自定义命令入口可用性（管理员 + 启动自检 + 已解锁可写 + 高级模式）。</summary>
+    /// <returns>可用性判定结果。</returns>
+    private CustomCommandAvailability EvaluateCustomAvailability()
+        => CustomCommandRules.EvaluateAvailability(
+            isAdministrator: _verdict?.IsAdministrator == true,
+            advancedModeEnabled: _advancedModeEnabled,
+            mediaUnlocked: _mediaUnlocked,
+            writable: _mediaUnlocked && _mediaState != MediaState.ReadOnlyOrUnwritable,
+            canStart: _verdict?.CanStart == true);
+
+    /// <summary>判断自定义命令当前是否可用（在运行条件之外，还要求“强制记录可用”）。</summary>
+    /// <returns>可用返回 true。</returns>
+    private bool IsCustomCommandAvailable()
+        => EvaluateCustomAvailability().IsAvailable && !_customCommandRecordingDisabled;
+
+    /// <summary>刷新自定义命令页的入口可用性、禁用原因横幅与按钮状态。</summary>
+    private void RefreshCustomCommandAvailability()
+    {
+        var availability = EvaluateCustomAvailability();
+        var available = availability.IsAvailable && !_customCommandRecordingDisabled;
+
+        CustomAvailabilityBanner.Visibility = available ? Visibility.Collapsed : Visibility.Visible;
+        CustomAvailabilityText.Text = available
+            ? string.Empty
+            : _customCommandRecordingDisabled
+                ? "强制记录不可用：命令历史或审计写入失败，已停止后续自定义命令执行（命令必须记录，不提供“不记录执行”的路径）。"
+                : availability.Reason ?? "自定义命令当前不可用。";
+
+        CustomRunButton.IsEnabled = available && !_customCommandRunning;
+        CustomCommandBox.IsEnabled = available && !_customCommandRunning;
+        CustomMultilineCheck.IsEnabled = available && !_customCommandRunning;
+        CustomCancelButton.IsEnabled = _customCommandRunning;
+
+        CustomRunHintText.Text = available
+            ? "按 Enter（单行模式）或点击“执行命令”后，需在下方确认影响与身份方可执行。"
+            : "入口不可用：处理上方提示后方可使用。";
+    }
+
+    /// <summary>切换单行 / 多行命令输入模式。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private void OnCustomMultilineChanged(object sender, RoutedEventArgs e)
+    {
+        var multiline = CustomMultilineCheck.IsChecked == true;
+        CustomCommandBox.AcceptsReturn = multiline;
+        CustomCommandBox.TextWrapping = multiline ? TextWrapping.Wrap : TextWrapping.NoWrap;
+        CustomCommandBox.Height = multiline ? 92 : 30;
+        CustomCommandBox.VerticalScrollBarVisibility = multiline ? ScrollBarVisibility.Auto : ScrollBarVisibility.Disabled;
+    }
+
+    /// <summary>命令输入框回车：单行模式下按 Enter 直接进入执行前确认。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">键盘事件参数。</param>
+    private void OnCustomCommandBoxKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter && CustomMultilineCheck.IsChecked != true)
+        {
+            e.Handled = true;
+            BeginCustomCommandConfirmation();
+        }
+    }
+
+    /// <summary>点击“执行命令”：进入执行前的“影响与身份”确认。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private void OnRunCustomCommandClick(object sender, RoutedEventArgs e) => BeginCustomCommandConfirmation();
+
+    /// <summary>
+    /// 进入执行前的“影响与身份”确认：校验入口可用性与命令非空，展示完整命令、执行身份与影响提示。
+    /// 每次执行都需确认（不提供“本次不再确认”的路径）。
+    /// </summary>
+    private void BeginCustomCommandConfirmation()
+    {
+        if (_customCommandRunning)
+        {
+            return;
+        }
+
+        if (!EnsureUnlocked())
+        {
+            return;
+        }
+
+        var availability = EvaluateCustomAvailability();
+        if (!availability.IsAvailable || _customCommandRecordingDisabled)
+        {
+            MessageBox.Show(
+                this,
+                _customCommandRecordingDisabled
+                    ? "强制记录不可用：命令历史或审计写入失败，已停止后续自定义命令执行。"
+                    : availability.Reason ?? "自定义命令当前不可用。",
+                "DeskIT",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            RefreshCustomCommandAvailability();
+            return;
+        }
+
+        var command = CustomCommandBox.Text.Trim();
+        if (command.Length == 0)
+        {
+            MessageBox.Show(this, "请输入要执行的命令。", "DeskIT", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        _pendingCustomCommand = command;
+        CustomConfirmCommandText.Text = "命令：" + command;
+        CustomConfirmIdentityText.Text =
+            $"执行身份：{CustomCommandRules.DescribeExecutionAs(_privilege)}"
+            + $" · 会话：{(string.IsNullOrWhiteSpace(_ledgerSessionId) ? "未建立会话（不关联会话）" : _ledgerSessionId)}";
+        CustomConfirmImpactText.Text =
+            "影响提示：该命令将以当前身份在目标机直接执行，可能修改系统状态且影响不可预知；"
+            + "执行记录与输出（已脱敏）将强制写入介质并生成审计事件。请确认命令内容无误。";
+        CustomConfirmPanel.Visibility = Visibility.Visible;
+        CustomRunButton.IsEnabled = false;
+        CustomCommandBox.IsEnabled = false;
+        CustomMultilineCheck.IsEnabled = false;
+    }
+
+    /// <summary>点击“确认执行”：按已确认的命令执行一次自定义命令。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private async void OnConfirmCustomCommandClick(object sender, RoutedEventArgs e)
+    {
+        var command = _pendingCustomCommand;
+        if (command is null || _customCommandRunning)
+        {
+            return;
+        }
+
+        _pendingCustomCommand = null;
+        HideCustomConfirmPanel();
+        await RunCustomCommandAsync(command);
+    }
+
+    /// <summary>点击确认区的“取消”：放弃本次执行。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private void OnCancelCustomConfirmClick(object sender, RoutedEventArgs e)
+    {
+        _pendingCustomCommand = null;
+        HideCustomConfirmPanel();
+        CustomResultText.Text = "已取消：未执行该命令。";
+    }
+
+    /// <summary>隐藏执行前确认区并恢复输入区可用性。</summary>
+    private void HideCustomConfirmPanel()
+    {
+        CustomConfirmPanel.Visibility = Visibility.Collapsed;
+        RefreshCustomCommandAvailability();
+    }
+
+    /// <summary>点击“中止”：终止正在执行的自定义命令（归类为“已取消”）。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private void OnCancelCustomCommandClick(object sender, RoutedEventArgs e)
+    {
+        _customCommandCancellation?.Cancel();
+        CustomResultText.Text = "正在中止：将终止当前命令…";
+    }
+
+    /// <summary>
+    /// 执行一条受控自定义命令：经执行器运行并采集执行前后的持久化项差异，强制记录（命令历史 + 审计）。
+    /// 记录失败时标记“强制记录不可用”并停止后续执行；记录成功时计入本次会话台账（不计入常规动作成功率）。
+    /// </summary>
+    /// <param name="command">命令原文（未包装）。</param>
+    /// <returns>无返回值的异步任务。</returns>
+    private async Task RunCustomCommandAsync(string command)
+    {
+        _customCommandRunning = true;
+        _customCommandCancellation?.Dispose();
+        _customCommandCancellation = new CancellationTokenSource();
+        var token = _customCommandCancellation.Token;
+
+        SetCustomBusy(true);
+        CustomResultText.Text = "正在执行命令并采集持久化项基线（服务 / 计划任务 / 自启动项）…";
+        CustomPersistenceText.Text = string.Empty;
+        CustomOutputText.Text = string.Empty;
+
+        CustomCommandResult result;
+        try
+        {
+            var context = new CustomCommandContext(
+                _dataDirectory,
+                _ledgerSessionId,
+                _privilege,
+                _currentOperator,
+                Environment.MachineName);
+
+            result = await _customCommandService.ExecuteAsync(command, context, token);
+        }
+        catch (Exception ex)
+        {
+            CustomResultText.Text = $"执行自定义命令时发生异常：{ex.Message}";
+            _customCommandRunning = false;
+            _customCommandCancellation?.Dispose();
+            _customCommandCancellation = null;
+            SetCustomBusy(false);
+            RefreshCustomCommandAvailability();
+            return;
+        }
+
+        var record = result.Record;
+        CustomResultText.Text =
+            $"结果：{ActionRules.DescribeOutcome(record.Outcome)} · 退出码 {record.ExitCode}"
+            + $" · 耗时 {record.DurationSeconds.ToString("0.0", CultureInfo.InvariantCulture)} 秒 · 身份 {record.ExecutedAs}"
+            + (record.TimedOut ? " · 已超时终止" : string.Empty);
+        CustomOutputText.Text = BuildCustomOutputText(record);
+        CustomPersistenceText.Text = CustomCommandViewFactory.DescribePersistence(record.PersistenceChanges);
+
+        if (result.RecordingSucceeded)
+        {
+            _rawCustomCommands.Add(record);
+            _rawPersistenceChanges.AddRange(record.PersistenceChanges);
+            _customHistoryLoaded = true;
+            ReloadCustomHistoryFromDisk();
+        }
+        else
+        {
+            _customCommandRecordingDisabled = true;
+            MessageBox.Show(
+                this,
+                result.RecordingError ?? "强制记录失败：已停止后续自定义命令执行。",
+                "DeskIT",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+
+        _customCommandRunning = false;
+        _customCommandCancellation?.Dispose();
+        _customCommandCancellation = null;
+        SetCustomBusy(false);
+        RefreshCustomCommandAvailability();
+    }
+
+    /// <summary>把命令执行的标准输出与标准错误合并为可展示文本。</summary>
+    /// <param name="record">命令执行记录。</param>
+    /// <returns>输出文本；无输出时给出提示。</returns>
+    private static string BuildCustomOutputText(CustomCommandRecord record)
+    {
+        var builder = new StringBuilder();
+        if (!string.IsNullOrWhiteSpace(record.OutputSummary))
+        {
+            builder.Append(record.OutputSummary);
+        }
+
+        if (!string.IsNullOrWhiteSpace(record.ErrorSummary))
+        {
+            if (builder.Length > 0)
+            {
+                builder.AppendLine();
+            }
+
+            builder.AppendLine("[标准错误]");
+            builder.Append(record.ErrorSummary);
+        }
+
+        return builder.Length == 0 ? "（无输出）" : builder.ToString();
+    }
+
+    /// <summary>切换自定义命令忙碌态（执行期间禁用触发与输入，启用中止按钮）。</summary>
+    /// <param name="busy">是否忙碌。</param>
+    private void SetCustomBusy(bool busy)
+    {
+        _customCommandRunning = busy;
+        var available = IsCustomCommandAvailable();
+        CustomRunButton.IsEnabled = !busy && available;
+        CustomCancelButton.IsEnabled = busy;
+        CustomCommandBox.IsEnabled = !busy && available;
+        CustomMultilineCheck.IsEnabled = !busy && available;
+    }
+
+    /// <summary>点击“重新加载历史”：从磁盘重读命令历史。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private void OnReloadCustomHistoryClick(object sender, RoutedEventArgs e) => ReloadCustomHistoryFromDisk();
+
+    /// <summary>确保命令历史已加载（首次进入本页时读取 data\custom\commands.db，避免拖慢启动）。</summary>
+    private void EnsureCustomHistoryLoaded()
+    {
+        if (_customHistoryLoaded)
+        {
+            return;
+        }
+
+        ReloadCustomHistoryFromDisk();
+        _customHistoryLoaded = true;
+    }
+
+    /// <summary>
+    /// 从磁盘重读命令历史并刷新列表；读取成功即视为“强制记录可用”（清除记录失败禁用标记，提供恢复路径）。
+    /// </summary>
+    private void ReloadCustomHistoryFromDisk()
+    {
+        if (!_mediaUnlocked)
+        {
+            _customHistory.Clear();
+            CustomHistoryStatusText.Text = "介质未解锁：无法读取命令历史。";
+            return;
+        }
+
+        try
+        {
+            var records = _customCommandStore.LoadAll(_dataDirectory);
+            _customHistory.Clear();
+            foreach (var view in CustomCommandViewFactory.BuildHistory(records))
+            {
+                _customHistory.Add(view);
+            }
+
+            _customCommandRecordingDisabled = false;
+            CustomHistoryStatusText.Text = records.Count == 0 ? "暂无命令历史。" : $"共 {records.Count} 条命令历史。";
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or MediaLockedException or MediaIntegrityException)
+        {
+            CustomHistoryStatusText.Text = $"命令历史读取失败：{ex.Message}";
+        }
+    }
+
+    /// <summary>点击“另存为修复动作”：弹出沉淀弹窗；保存成功后刷新 M4 动作库使其立即可复用。</summary>
+    /// <param name="sender">事件源（其 Tag 为命令历史视图）。</param>
+    /// <param name="e">事件参数。</param>
+    private void OnSedimentFromHistoryClick(object sender, RoutedEventArgs e)
+    {
+        if (!EnsureUnlocked())
+        {
+            return;
+        }
+
+        if (sender is not FrameworkElement { Tag: CustomCommandHistoryView view })
+        {
+            return;
+        }
+
+        if (PromptSediment(view.Record))
+        {
+            // 沉淀保存成功后刷新 M4 动作库（清空缓存后重新加载 actions 目录）。
+            _actionLibrary = null;
+            EnsureActionLibraryLoaded();
+        }
+    }
+
+    /// <summary>
+    /// 弹出“另存为修复动作”窗口：填写名称、说明、风险级别、是否需重启、是否可回滚等；
+    /// 校验不通过时在窗口内逐条列出字段级问题。保存成功返回 true。
+    /// </summary>
+    /// <param name="record">命令执行记录（其脱敏命令原文作为源命令）。</param>
+    /// <returns>保存成功返回 true；取消或保存失败返回 false。</returns>
+    private bool PromptSediment(CustomCommandRecord record)
+    {
+        var window = new Window
+        {
+            Title = "另存为修复动作",
+            Width = 580,
+            SizeToContent = SizeToContent.Height,
+            ResizeMode = ResizeMode.NoResize,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Owner = this,
+            ShowInTaskbar = false
+        };
+
+        var panel = new StackPanel { Margin = new Thickness(18) };
+
+        panel.Children.Add(new TextBlock
+        {
+            Text = "把该命令沉淀为正式修复动作：写入 U 盘 actions 目录（不覆盖既有文件）；保存后返回“修复动作（M4）”页即可见。",
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = new SolidColorBrush(Color.FromRgb(0x6B, 0x72, 0x80))
+        });
+
+        panel.Children.Add(BuildDialogLabel("源命令（作为动作脚本，不得含 {{ }} 占位符）"));
+        panel.Children.Add(new TextBox
+        {
+            Text = record.CommandText,
+            IsReadOnly = true,
+            FontFamily = new FontFamily("Consolas"),
+            TextWrapping = TextWrapping.Wrap,
+            MaxHeight = 80,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            Margin = new Thickness(0, 4, 0, 0)
+        });
+
+        panel.Children.Add(BuildDialogLabel("动作名称（必填）"));
+        var nameBox = new TextBox { Height = 28, Margin = new Thickness(0, 4, 0, 0) };
+        panel.Children.Add(nameBox);
+
+        panel.Children.Add(BuildDialogLabel("动作说明（影响与注意事项，必填）"));
+        var descriptionBox = new TextBox
+        {
+            AcceptsReturn = true,
+            Height = 60,
+            TextWrapping = TextWrapping.Wrap,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            Margin = new Thickness(0, 4, 0, 0)
+        };
+        panel.Children.Add(descriptionBox);
+
+        panel.Children.Add(BuildDialogLabel("风险级别（不得低于“高”，必选）"));
+        var riskCombo = new ComboBox
+        {
+            ItemsSource = new[]
+            {
+                new ChoiceOption<RiskLevel>("高", RiskLevel.High),
+                new ChoiceOption<RiskLevel>("不可逆", RiskLevel.Irreversible)
+            },
+            SelectedIndex = 0,
+            Margin = new Thickness(0, 4, 0, 0)
+        };
+        panel.Children.Add(riskCombo);
+
+        panel.Children.Add(BuildDialogLabel("所属问题场景"));
+        var sceneCombo = new ComboBox
+        {
+            ItemsSource = BuildSceneOptions(),
+            SelectedIndex = 4,
+            Margin = new Thickness(0, 4, 0, 0)
+        };
+        panel.Children.Add(sceneCombo);
+
+        panel.Children.Add(BuildDialogLabel("是否需重启生效（必选）"));
+        var restartCombo = new ComboBox
+        {
+            ItemsSource = BuildTriStateOptions(),
+            SelectedIndex = 0,
+            Margin = new Thickness(0, 4, 0, 0)
+        };
+        panel.Children.Add(restartCombo);
+
+        panel.Children.Add(BuildDialogLabel("是否可回滚（必选；选择“可回滚”时须填写回滚说明）"));
+        var rollbackCombo = new ComboBox
+        {
+            ItemsSource = BuildTriStateOptions(),
+            SelectedIndex = 0,
+            Margin = new Thickness(0, 4, 0, 0)
+        };
+        panel.Children.Add(rollbackCombo);
+
+        panel.Children.Add(BuildDialogLabel("回滚说明"));
+        var rollbackNoteBox = new TextBox
+        {
+            AcceptsReturn = true,
+            Height = 50,
+            TextWrapping = TextWrapping.Wrap,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            IsEnabled = false,
+            Margin = new Thickness(0, 4, 0, 0)
+        };
+        panel.Children.Add(rollbackNoteBox);
+
+        panel.Children.Add(BuildDialogLabel("单项执行超时（秒）"));
+        var timeoutBox = new TextBox
+        {
+            Text = ActionRules.DefaultTimeoutSeconds.ToString(CultureInfo.InvariantCulture),
+            Height = 28,
+            Margin = new Thickness(0, 4, 0, 0)
+        };
+        panel.Children.Add(timeoutBox);
+
+        rollbackCombo.SelectionChanged += (_, _) =>
+            rollbackNoteBox.IsEnabled = SelectedTriState(rollbackCombo) == true;
+
+        var message = new TextBlock
+        {
+            Foreground = new SolidColorBrush(Color.FromRgb(0xB9, 0x1C, 0x1C)),
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 10, 0, 0),
+            Visibility = Visibility.Collapsed
+        };
+        panel.Children.Add(message);
+
+        var buttons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Margin = new Thickness(0, 14, 0, 0)
+        };
+        var cancel = new Button { Content = "取消", Width = 90, Height = 30, IsCancel = true };
+        var save = new Button
+        {
+            Content = "保存",
+            Width = 110,
+            Height = 30,
+            Margin = new Thickness(8, 0, 0, 0),
+            IsDefault = true
+        };
+        buttons.Children.Add(cancel);
+        buttons.Children.Add(save);
+        panel.Children.Add(buttons);
+
+        cancel.Click += (_, _) => window.DialogResult = false;
+        save.Click += (_, _) =>
+        {
+            var timeout = int.TryParse(timeoutBox.Text.Trim(), out var parsedTimeout) ? parsedTimeout : 0;
+
+            var request = new ActionSedimentRequest
+            {
+                SourceCommand = record.CommandText,
+                Name = nameBox.Text.Trim(),
+                Description = descriptionBox.Text.Trim(),
+                Risk = SelectedRisk(riskCombo),
+                RequiresRestart = SelectedTriState(restartCombo),
+                CanRollback = SelectedTriState(rollbackCombo),
+                RollbackNote = rollbackNoteBox.Text.Trim(),
+                Scene = SelectedScene(sceneCombo),
+                TimeoutSeconds = timeout
+            };
+
+            var validation = CustomCommandRules.ValidateSediment(request);
+            if (!validation.IsValid)
+            {
+                message.Text = "请修正以下问题：\n" + string.Join("\n", validation.Problems.Select(problem => "· " + problem));
+                message.Visibility = Visibility.Visible;
+                return;
+            }
+
+            var result = _actionSedimentStore.Save(_programDirectory, request);
+            if (!result.Success)
+            {
+                var details = result.Problems.Count == 0
+                    ? result.Message
+                    : result.Message + "\n" + string.Join("\n", result.Problems.Select(problem => "· " + problem));
+                message.Text = details;
+                message.Visibility = Visibility.Visible;
+                return;
+            }
+
+            MessageBox.Show(this, result.Message, "另存为修复动作", MessageBoxButton.OK, MessageBoxImage.Information);
+            window.DialogResult = true;
+        };
+
+        window.Content = panel;
+        return window.ShowDialog() == true;
+    }
+
+    /// <summary>构建沉淀弹窗的字段标题文本块。</summary>
+    /// <param name="text">标题文本。</param>
+    /// <returns>文本块。</returns>
+    private static TextBlock BuildDialogLabel(string text)
+        => new()
+        {
+            Text = text,
+            TextWrapping = TextWrapping.Wrap,
+            FontWeight = FontWeights.SemiBold,
+            FontSize = 12,
+            Margin = new Thickness(0, 10, 0, 0),
+            Foreground = new SolidColorBrush(Color.FromRgb(0x37, 0x41, 0x51))
+        };
+
+    /// <summary>构建问题场景下拉选项（7 个场景，取其中文名）。</summary>
+    /// <returns>场景选项列表。</returns>
+    private static IReadOnlyList<ChoiceOption<DiagnosisScene>> BuildSceneOptions()
+        => new[]
+        {
+            new ChoiceOption<DiagnosisScene>(DiagnosisRules.DescribeScene(DiagnosisScene.Slowness), DiagnosisScene.Slowness),
+            new ChoiceOption<DiagnosisScene>(DiagnosisRules.DescribeScene(DiagnosisScene.Network), DiagnosisScene.Network),
+            new ChoiceOption<DiagnosisScene>(DiagnosisRules.DescribeScene(DiagnosisScene.PrintingSharing), DiagnosisScene.PrintingSharing),
+            new ChoiceOption<DiagnosisScene>(DiagnosisRules.DescribeScene(DiagnosisScene.DiskStorage), DiagnosisScene.DiskStorage),
+            new ChoiceOption<DiagnosisScene>(DiagnosisRules.DescribeScene(DiagnosisScene.StartupSystem), DiagnosisScene.StartupSystem),
+            new ChoiceOption<DiagnosisScene>(DiagnosisRules.DescribeScene(DiagnosisScene.Software), DiagnosisScene.Software),
+            new ChoiceOption<DiagnosisScene>(DiagnosisRules.DescribeScene(DiagnosisScene.AccountPrivilege), DiagnosisScene.AccountPrivilege)
+        };
+
+    /// <summary>构建“是否”三态下拉选项（请选择 / 否 / 是）。</summary>
+    /// <returns>三态选项列表。</returns>
+    private static IReadOnlyList<ChoiceOption<bool?>> BuildTriStateOptions()
+        => new[]
+        {
+            new ChoiceOption<bool?>("请选择", null),
+            new ChoiceOption<bool?>("否", false),
+            new ChoiceOption<bool?>("是", true)
+        };
+
+    /// <summary>取三态下拉的当前取值（选择“请选择”时为 null）。</summary>
+    /// <param name="combo">下拉框。</param>
+    /// <returns>三态取值。</returns>
+    private static bool? SelectedTriState(ComboBox combo)
+        => combo.SelectedItem is ChoiceOption<bool?> option ? option.Value : null;
+
+    /// <summary>取风险级别下拉的当前取值（未选时按“高”处理）。</summary>
+    /// <param name="combo">下拉框。</param>
+    /// <returns>风险级别。</returns>
+    private static RiskLevel SelectedRisk(ComboBox combo)
+        => combo.SelectedItem is ChoiceOption<RiskLevel> option ? option.Value : RiskLevel.High;
+
+    /// <summary>取场景下拉的当前取值（未选时按“启动与系统”处理）。</summary>
+    /// <param name="combo">下拉框。</param>
+    /// <returns>问题场景。</returns>
+    private static DiagnosisScene SelectedScene(ComboBox combo)
+        => combo.SelectedItem is ChoiceOption<DiagnosisScene> option ? option.Value : DiagnosisScene.StartupSystem;
 }

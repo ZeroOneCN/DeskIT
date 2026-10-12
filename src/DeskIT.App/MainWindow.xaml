@@ -23,6 +23,7 @@
         <local:LedgerConclusionToBrushConverter x:Key="LedgerConclusionBrush" />
         <local:MediaStateToBrushConverter x:Key="MediaStateBrush" />
         <local:MediaStateToTextConverter x:Key="MediaStateText" />
+        <local:CustomCommandOutcomeToBrushConverter x:Key="CustomCommandOutcomeBrush" />
         <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
 
         <Style x:Key="CardBorder" TargetType="Border">
@@ -1421,6 +1422,131 @@
                         </Border>
                     </StackPanel>
                 </ScrollViewer>
+            </TabItem>
+
+            <!-- ============ M9 受控自定义命令 ============ -->
+            <TabItem Header="自定义命令（M9）">
+                <Grid Margin="0,4,0,0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <Border x:Name="CustomAvailabilityBanner" Grid.Row="0" Visibility="Collapsed"
+                            Background="#FEF2F2" BorderBrush="#FECACA" BorderThickness="1"
+                            CornerRadius="6" Padding="10" Margin="0,0,0,0">
+                        <TextBlock x:Name="CustomAvailabilityText" Foreground="#B91C1C" TextWrapping="Wrap" />
+                    </Border>
+
+                    <Grid Grid.Row="1" Margin="0,10,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="370" />
+                        </Grid.ColumnDefinitions>
+
+                        <!-- 左：命令输入、确认、结果与输出 -->
+                        <Border Grid.Column="0" Style="{StaticResource CardBorder}" Margin="0,0,14,0">
+                            <DockPanel>
+                                <TextBlock DockPanel.Dock="Top" Style="{StaticResource CardTitle}"
+                                           Text="受控自定义命令（管理员 + 高级模式 + 逐条确认 + 强制记录）" />
+                                <TextBlock DockPanel.Dock="Top" Style="{StaticResource FieldName}"
+                                           Text="命令原文与输出在执行前/后均先经凭据脱敏再落盘；执行必须记录，不提供“不记录执行”的路径。" />
+
+                                <CheckBox x:Name="CustomMultilineCheck" DockPanel.Dock="Top" Margin="0,8,0,0"
+                                          Content="多行模式" Checked="OnCustomMultilineChanged" Unchecked="OnCustomMultilineChanged" />
+
+                                <TextBox x:Name="CustomCommandBox" DockPanel.Dock="Top" Margin="0,6,0,0"
+                                         Height="30" VerticalContentAlignment="Center" FontFamily="Consolas"
+                                         TextWrapping="NoWrap" VerticalScrollBarVisibility="Auto"
+                                         KeyDown="OnCustomCommandBoxKeyDown" />
+
+                                <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,8,0,0">
+                                    <Button x:Name="CustomRunButton" Content="执行命令" Height="30" Padding="14,0"
+                                            Click="OnRunCustomCommandClick" />
+                                    <Button x:Name="CustomCancelButton" Content="中止" Height="30" Padding="14,0" Margin="10,0,0,0"
+                                            IsEnabled="False" Click="OnCancelCustomCommandClick" />
+                                </StackPanel>
+                                <TextBlock x:Name="CustomRunHintText" DockPanel.Dock="Top" Style="{StaticResource FieldName}"
+                                           Margin="0,6,0,0" />
+
+                                <!-- 执行前的“影响与身份”确认（内联；不提供“本次不再确认”） -->
+                                <Border x:Name="CustomConfirmPanel" DockPanel.Dock="Top" Visibility="Collapsed"
+                                        Background="#FFFBEB" BorderBrush="#FDE68A" BorderThickness="1"
+                                        CornerRadius="6" Padding="12" Margin="0,10,0,0">
+                                    <StackPanel>
+                                        <TextBlock Text="执行前确认（影响与身份）" FontWeight="SemiBold" FontSize="13" Foreground="#92400E" />
+                                        <TextBlock x:Name="CustomConfirmCommandText" Margin="0,6,0,0" TextWrapping="Wrap"
+                                                   FontFamily="Consolas" Foreground="#111827" />
+                                        <TextBlock x:Name="CustomConfirmIdentityText" Margin="0,6,0,0" TextWrapping="Wrap"
+                                                   Foreground="#6B7280" FontSize="12" />
+                                        <TextBlock x:Name="CustomConfirmImpactText" Margin="0,4,0,0" TextWrapping="Wrap"
+                                                   Foreground="#B45309" FontSize="12" />
+                                        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                                            <Button x:Name="CustomConfirmYesButton" Content="确认执行" Height="30" Padding="14,0"
+                                                    Click="OnConfirmCustomCommandClick" />
+                                            <Button x:Name="CustomConfirmNoButton" Content="取消" Height="30" Padding="14,0" Margin="10,0,0,0"
+                                                    Click="OnCancelCustomConfirmClick" />
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Border>
+
+                                <StackPanel DockPanel.Dock="Top" Margin="0,10,0,0">
+                                    <TextBlock x:Name="CustomResultText" Style="{StaticResource FieldValue}" TextWrapping="Wrap" />
+                                    <TextBlock x:Name="CustomPersistenceText" Style="{StaticResource FieldName}" Margin="0,4,0,0" />
+                                </StackPanel>
+
+                                <TextBlock DockPanel.Dock="Top" Style="{StaticResource CardTitle}" Margin="0,10,0,6" Text="执行输出" />
+                                <TextBox x:Name="CustomOutputText" IsReadOnly="True" AcceptsReturn="True"
+                                         FontFamily="Consolas" TextWrapping="NoWrap"
+                                         VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" />
+                            </DockPanel>
+                        </Border>
+
+                        <!-- 右：命令历史 -->
+                        <Border Grid.Column="1" Style="{StaticResource CardBorder}">
+                            <DockPanel>
+                                <TextBlock DockPanel.Dock="Top" Style="{StaticResource CardTitle}"
+                                           Text="命令历史（每条可另存为修复动作）" />
+                                <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
+                                    <Button x:Name="CustomReloadHistoryButton" Content="重新加载历史" Height="28" Padding="12,0"
+                                            Click="OnReloadCustomHistoryClick" />
+                                    <TextBlock x:Name="CustomHistoryStatusText" Style="{StaticResource FieldName}"
+                                               VerticalAlignment="Center" Margin="10,0,0,0" />
+                                </StackPanel>
+                                <ListBox x:Name="CustomHistoryList" BorderThickness="0"
+                                         HorizontalContentAlignment="Stretch">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border BorderBrush="#F3F4F6" BorderThickness="0,0,0,1" Padding="0,8">
+                                                <StackPanel>
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <Border Background="{Binding Outcome, Converter={StaticResource CustomCommandOutcomeBrush}}"
+                                                                CornerRadius="10" Padding="8,2">
+                                                            <TextBlock Text="{Binding OutcomeText}" FontSize="11" Foreground="White" />
+                                                        </Border>
+                                                        <TextBlock Text="{Binding TimeText}" FontSize="11" Foreground="#6B7280"
+                                                                   VerticalAlignment="Center" Margin="8,0,0,0" />
+                                                    </StackPanel>
+                                                    <TextBlock Text="{Binding CommandText}" FontSize="12" FontFamily="Consolas"
+                                                               TextTrimming="CharacterEllipsis" Margin="0,6,0,0"
+                                                               ToolTip="{Binding CommandText}" />
+                                                    <TextBlock Text="{Binding DetailText}" FontSize="11" Foreground="#6B7280"
+                                                               TextWrapping="Wrap" Margin="0,2,0,0" />
+                                                    <TextBlock Text="{Binding PersistenceText}" FontSize="11" Foreground="#B45309"
+                                                               TextWrapping="Wrap" Margin="0,2,0,0"
+                                                               Visibility="{Binding HasPersistenceChanges, Converter={StaticResource BoolToVisibility}}" />
+                                                    <Button Content="另存为修复动作" Height="26" Padding="10,0"
+                                                            HorizontalAlignment="Left" Margin="0,6,0,0"
+                                                            Tag="{Binding}" Click="OnSedimentFromHistoryClick" />
+                                                </StackPanel>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                            </DockPanel>
+                        </Border>
+                    </Grid>
+                </Grid>
             </TabItem>
         </TabControl>
 

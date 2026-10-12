@@ -71,6 +71,7 @@ powershell -ExecutionPolicy Bypass -File tools\Generate-Manifest.ps1 -PublishDir
 | 6 | M5 软件安装与卸载 + M6 账号与权限辅助 | 已完成 |
 | 7 | M7 记录与多机台账 | 已完成 |
 | 8 | M8 介质安全与数据保护 | 已完成 |
+| 9 | M9 受控自定义命令与动作沉淀 | 已完成 |
 
 **M1（步骤 2）**：启动页呈现三块内容——启动自检结果（程序完整性、数据目录可写、介质可用空间、目标系统版本、当前权限、并发实例）、当前权限与提权入口（管理员提权 / 只读回退）、本次能力摘要；并实现高级模式的介质级开关（随 `data/operators.json` 保存，开启需二次确认）。
 - 判定规则集中在 [StartupRules.cs](src/DeskIT.Core/StartupRules.cs)（纯逻辑、可单测）：空间 200 MB / 500 MB 阈值、系统版本支持范围、完整性结论、能力推导。
@@ -132,6 +133,15 @@ powershell -ExecutionPolicy Bypass -File tools\Generate-Manifest.ps1 -PublishDir
 - **审计**：解锁成功 / 失败、导出、动作执行、报告产出、异常移除 / 会话中断、高级模式开关变化、处理人切换、临时文件清理、介质迁移等均写入 `data\audit\audit.db`（仅追加 NDJSON、经金库加密），默认保留 365 天、到期自动清理；审计事件不含任何凭证明文。
 - **介质迁移**：数据目录整体复制到新介质（主密码不变，可继续使用）时按卷序列号生成的**介质标识**差异检测并提示“已更换介质”（介质标识不参与密钥派生、不绑定机器）；目标机临时文件仅写在 `%TEMP%\DeskIT\<runId>`，程序退出时删除，失败时提示残留路径。
 - 纯规则见 [MediaModels.cs](src/DeskIT.Core/MediaModels.cs) 与 [MediaRules.cs](src/DeskIT.Core/MediaRules.cs)；加密金库见 [MediaVault.cs](src/DeskIT.Windows/MediaVault.cs)；介质头信息与设置见 [MediaStateStore.cs](src/DeskIT.Windows/MediaStateStore.cs)；拔出保护与探测见 [MediaWatchdog.cs](src/DeskIT.Windows/MediaWatchdog.cs) 与 [MediaWritabilityProbe.cs](src/DeskIT.Windows/MediaWritabilityProbe.cs)；审计见 [AuditStore.cs](src/DeskIT.Windows/AuditStore.cs)；临时目录与迁移见 [TempWorkspace.cs](src/DeskIT.Windows/TempWorkspace.cs) 与 [MediaMigration.cs](src/DeskIT.Windows/MediaMigration.cs)；界面见 [MainWindow.xaml](src/DeskIT.App/MainWindow.xaml) 的解锁 / 初始化门禁与“介质与设置（M8）”页。
+
+**M9（步骤 9）**：受控自定义命令与动作沉淀——内置动作覆盖不到时的**受控后门**：以**管理员 + 高级模式 + 介质已解锁且可写**为前提执行任意 PowerShell 命令，且**每次执行都必须强制记录**，不提供“不记录执行”的路径。
+- **入口门禁**：`自定义命令（M9）` 页仅在“管理员模式 + 启动自检通过 + 介质已解锁可写 + 高级模式已开启”四项同时满足时可用，否则横幅明示禁用原因（判定顺序：管理员 → 启动自检 → 解锁 → 可写 → 高级模式）。
+- **执行前确认**：每次执行都弹出内联的“影响与身份”确认区，展示**完整命令**、执行身份（管理员 / 标准用户）、会话关联与影响提示，确认后方可执行，**不提供“本次不再确认”**。
+- **强制记录**：命令原文与输出在落盘前统一经凭据脱敏（`password= / passwd: / pwd= / /pass: / -p / --password` 值掩码为 `******`），再写入命令历史（`data\custom\commands.db`，加密追加 NDJSON）与审计事件（`AuditEventKind.CustomCommandExecuted`）；**命令历史或审计写入失败即返回失败并停止后续执行**（页面横幅提示，重新加载历史成功后恢复）。
+- **持久化变更检测**：执行前后分别只读采集**系统服务 / 计划任务 / 开机自启动项**三类基线并做差异对比（服务取 `HKLM\SYSTEM\CurrentControlSet\Services` 子键名、计划任务取只读 PS 枚举、自启动项取 `Win32_StartupCommand`），任一侧采集失败一律标注“**未知**”并说明原因，**绝不假装“无变化”**；差异显式列入界面与会话台账的“处理后系统持久化变更”。
+- **动作沉淀**：命令历史中每条记录可“另存为修复动作”，弹窗填写名称、说明、风险级别（不得低于“高”）、是否需重启、是否可回滚等，**字段不全给出字段级提示**；校验通过后写入 `actions\custom-<slug>-<序号>.json`（JSON 数组、**不覆盖既有文件**、标识形如 `custom.001`），保存成功后自动刷新 M4 动作库即可复用。
+- 自定义命令清单进入会话台账（`HandlingRecord.CustomCommands`）并**不计入常规动作成功率**；初次执行会话结束后清空会话级缓存。
+- 纯规则见 [CustomCommandModels.cs](src/DeskIT.Core/CustomCommandModels.cs) 与 [CustomCommandRules.cs](src/DeskIT.Core/CustomCommandRules.cs)；执行与强制记录见 [CustomCommandService.cs](src/DeskIT.Windows/CustomCommandService.cs)；命令历史见 [CustomCommandStore.cs](src/DeskIT.Windows/CustomCommandStore.cs)；动作沉淀见 [ActionSedimentStore.cs](src/DeskIT.Windows/ActionSedimentStore.cs)；持久化探测见 [PersistenceProbe.cs](src/DeskIT.Windows/PersistenceProbe.cs)；界面见 [MainWindow.xaml](src/DeskIT.App/MainWindow.xaml) 的“自定义命令（M9）”页。
 
 ## 关于需求文档
 

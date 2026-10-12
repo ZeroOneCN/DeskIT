@@ -376,6 +376,14 @@ public static class LedgerRules
                 OutputSummary = MaskCredentials(command.OutputSummary)
             })
             .ToList(),
+        // 持久化变更的项名一般不含凭据，但仍统一过一遍掩码，与其余字段保持一致。
+        PersistenceChanges = record.PersistenceChanges
+            .Select(change => change with
+            {
+                Added = change.Added.Select(MaskCredentials).ToList(),
+                Removed = change.Removed.Select(MaskCredentials).ToList()
+            })
+            .ToList(),
         Scenes = MaskScenes(record.Scenes),
         Supplements = record.Supplements
             .Select(supplement => supplement with

@@ -171,6 +171,9 @@ public sealed record HandlingRecord
     /// <summary>自定义命令清单（M9 使用，本步为空清单）。</summary>
     public IReadOnlyList<LedgerCustomCommandEntry> CustomCommands { get; init; } = Array.Empty<LedgerCustomCommandEntry>();
 
+    /// <summary>处理后系统持久化变更（M9：自定义命令执行前后对比服务 / 计划任务 / 自启动项得到的差异）。</summary>
+    public IReadOnlyList<PersistenceChange> PersistenceChanges { get; init; } = Array.Empty<PersistenceChange>();
+
     /// <summary>结论（已解决 / 待重启生效 / 未解决 / 已中断）。</summary>
     public required SessionConclusion Conclusion { get; init; }
 

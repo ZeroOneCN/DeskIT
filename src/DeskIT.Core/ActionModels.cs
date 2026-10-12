@@ -93,6 +93,12 @@ public sealed class ActionDescriptor
     /// <summary>参数清单。</summary>
     public IReadOnlyList<ActionParameter> Parameters { get; init; } = Array.Empty<ActionParameter>();
 
+    /// <summary>
+    /// 动作来源（可选）。为空表示内置动作库；M9 动作沉淀写入的动作标记为“自定义沉淀”。
+    /// 既有 <c>actions/*.json</c> 不包含该字段时按内置动作处理，不影响解析。
+    /// </summary>
+    public string? Source { get; init; }
+
     /// <summary>高风险及以上（含不可逆）：需逐项二次确认。</summary>
     public bool IsHighRisk => Risk >= RiskLevel.High;
 

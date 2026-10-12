@@ -400,6 +400,39 @@ public sealed class MediaStateToTextConverter : IValueConverter
         => throw new NotSupportedException();
 }
 
+/// <summary>把自定义命令执行结果归类转换为徽标背景色（M9）。</summary>
+public sealed class CustomCommandOutcomeToBrushConverter : IValueConverter
+{
+    private static readonly SolidColorBrush SuccessBrush = new(Color.FromRgb(0x16, 0xA3, 0x4A));
+    private static readonly SolidColorBrush FailedBrush = new(Color.FromRgb(0xDC, 0x26, 0x26));
+    private static readonly SolidColorBrush CancelledBrush = new(Color.FromRgb(0x6B, 0x72, 0x80));
+    private static readonly SolidColorBrush TimedOutBrush = new(Color.FromRgb(0xD9, 0x77, 0x06));
+
+    /// <summary>按结果归类返回背景色：成功=绿、失败=红、取消=深灰、超时=橙。</summary>
+    /// <param name="value">ActionOutcome 值。</param>
+    /// <param name="targetType">目标类型。</param>
+    /// <param name="parameter">未使用。</param>
+    /// <param name="culture">区域信息。</param>
+    /// <returns>对应的画刷。</returns>
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        => value switch
+        {
+            ActionOutcome.Success or ActionOutcome.SuccessPendingRestart => SuccessBrush,
+            ActionOutcome.Failed => FailedBrush,
+            ActionOutcome.TimedOut => TimedOutBrush,
+            _ => CancelledBrush
+        };
+
+    /// <summary>不支持反向转换。</summary>
+    /// <param name="value">值。</param>
+    /// <param name="targetType">目标类型。</param>
+    /// <param name="parameter">参数。</param>
+    /// <param name="culture">区域信息。</param>
+    /// <returns>不返回。</returns>
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}
+
 /// <summary>把会话结论转换为徽标背景色。</summary>
 public sealed class LedgerConclusionToBrushConverter : IValueConverter
 {
