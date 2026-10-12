@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     为 DeskIT 发布目录生成 manifest.json（程序文件哈希清单），供程序启动自检做完整性比对。
 
