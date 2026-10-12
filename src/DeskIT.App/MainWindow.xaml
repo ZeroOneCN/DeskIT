@@ -16,6 +16,10 @@
         <local:DiagnosisConclusionToBrushConverter x:Key="ConclusionBrush" />
         <local:RiskLevelToBrushConverter x:Key="RiskBrush" />
         <local:ActionOutcomeToBrushConverter x:Key="ActionOutcomeBrush" />
+        <local:PackageIntegrityToBrushConverter x:Key="IntegrityBrush" />
+        <local:PackageMatchToBrushConverter x:Key="PackageMatchBrush" />
+        <local:InstallerOutcomeToBrushConverter x:Key="InstallerOutcomeBrush" />
+        <local:AccountRowToBrushConverter x:Key="AccountRowBrush" />
         <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
 
         <Style x:Key="CardBorder" TargetType="Border">
@@ -82,7 +86,8 @@
             <TextBlock x:Name="BannerText" Foreground="#B91C1C" TextWrapping="Wrap" />
         </Border>
 
-        <TabControl Grid.Row="2" Margin="0,14,0,0" Padding="0,10,0,0">
+        <TabControl x:Name="MainTabs" Grid.Row="2" Margin="0,14,0,0" Padding="0,10,0,0"
+                    SelectionChanged="OnMainTabChanged">
             <!-- ============ M1 便携启动 ============ -->
             <TabItem Header="便携启动（M1）">
                 <Grid Margin="0,4,0,0">
@@ -609,6 +614,335 @@
                                             </DataTemplate>
                                         </ItemsControl.ItemTemplate>
                                     </ItemsControl>
+                                </ScrollViewer>
+                            </DockPanel>
+                        </Border>
+                    </Grid>
+                </Grid>
+            </TabItem>
+
+            <!-- ============ M5 软件安装与卸载 ============ -->
+            <TabItem Header="软件安装卸载（M5）">
+                <Grid Margin="0,4,0,0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <!-- 顶部：包加载与已装清单 -->
+                    <Border Grid.Row="0" Style="{StaticResource CardBorder}">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource CardTitle}"
+                                       Text="U 盘软件包（来源不可验证的包默认禁止执行；安装 / 卸载仅在管理员模式下可用）" />
+                            <StackPanel Orientation="Horizontal">
+                                <Button x:Name="ReloadPackagesButton" Style="{StaticResource PrimaryButton}"
+                                        Content="重新加载软件包" Click="OnReloadPackagesClick" />
+                                <Button x:Name="RefreshInstalledButton" Height="34" Padding="14,0" Margin="8,0,0,0"
+                                        Content="刷新已装软件" Click="OnRefreshInstalledClick" />
+                                <TextBlock Foreground="#9CA3AF" FontSize="11" Margin="14,0,0,0" VerticalAlignment="Center"
+                                           TextWrapping="Wrap"
+                                           Text="包描述位于 U 盘 packages\*.json；重新加载会重新校验安装程序的 SHA-256。" />
+                            </StackPanel>
+                            <ProgressBar x:Name="PackageProgressBar" Height="6" Margin="0,12,0,6"
+                                         Minimum="0" Maximum="100" Value="0" />
+                            <TextBlock x:Name="PackageStatusText" FontSize="12" FontWeight="SemiBold"
+                                       Foreground="#111827" TextWrapping="Wrap" Text="正在加载软件包…" />
+                            <TextBlock x:Name="PackageProblemText" FontSize="12" Foreground="#B45309"
+                                       TextWrapping="Wrap" Margin="0,4,0,0" Visibility="Collapsed" />
+                        </StackPanel>
+                    </Border>
+
+                    <!-- 三列：软件包 / 已装软件 / 操作与结果 -->
+                    <Grid Grid.Row="1" Margin="0,12,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="340" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="420" />
+                        </Grid.ColumnDefinitions>
+
+                        <Border Grid.Column="0" Style="{StaticResource CardBorder}" Margin="0,0,12,0">
+                            <DockPanel>
+                                <TextBlock DockPanel.Dock="Top" Style="{StaticResource CardTitle}" Text="软件包（U 盘）" />
+                                <ListBox x:Name="PackageList" BorderThickness="0"
+                                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                         SelectionChanged="OnPackageSelectionChanged">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border BorderBrush="#F3F4F6" BorderThickness="0,0,0,1" Padding="2,8">
+                                                <StackPanel>
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <Border CornerRadius="10" Padding="8,2" VerticalAlignment="Center"
+                                                                Background="{Binding Integrity, Converter={StaticResource IntegrityBrush}}">
+                                                            <TextBlock FontSize="11" Foreground="White"
+                                                                       Text="{Binding IntegrityText}" />
+                                                        </Border>
+                                                        <TextBlock Text="{Binding HeaderText}" FontWeight="SemiBold"
+                                                                   FontSize="13" TextWrapping="Wrap" Margin="10,0,0,0"
+                                                                   VerticalAlignment="Center" />
+                                                    </StackPanel>
+                                                    <TextBlock Text="{Binding PublisherText}" FontSize="11"
+                                                               Foreground="#6B7280" Margin="0,3,0,0" TextWrapping="Wrap" />
+                                                    <TextBlock Text="{Binding SizeText}" FontSize="11"
+                                                               Foreground="#9CA3AF" Margin="0,1,0,0" />
+                                                    <Border CornerRadius="10" Padding="8,2" HorizontalAlignment="Left"
+                                                            Margin="0,4,0,0"
+                                                            Background="{Binding Match, Converter={StaticResource PackageMatchBrush}}">
+                                                        <TextBlock FontSize="11" Foreground="White"
+                                                                   Text="{Binding MatchDetailText}" />
+                                                    </Border>
+                                                    <TextBlock Text="{Binding IntegrityRemedy}" FontSize="11"
+                                                               Foreground="#B45309" TextWrapping="Wrap" Margin="0,4,0,0"
+                                                               Visibility="{Binding HasRemedy, Converter={StaticResource BoolToVisibility}}" />
+                                                </StackPanel>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                            </DockPanel>
+                        </Border>
+
+                        <Border Grid.Column="1" Style="{StaticResource CardBorder}" Margin="0,0,12,0">
+                            <DockPanel>
+                                <TextBlock DockPanel.Dock="Top" Style="{StaticResource CardTitle}"
+                                           Text="目标机已装软件（只读）" />
+                                <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,6">
+                                    <TextBlock Text="搜索：" FontSize="12" Foreground="#6B7280"
+                                               VerticalAlignment="Center" />
+                                    <TextBox x:Name="InstalledSearchBox" Width="200" Height="28" Margin="6,0,0,0"
+                                             VerticalContentAlignment="Center"
+                                             TextChanged="OnInstalledSearchChanged" />
+                                </StackPanel>
+                                <ListBox x:Name="InstalledList" BorderThickness="0"
+                                         ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border BorderBrush="#F3F4F6" BorderThickness="0,0,0,1" Padding="2,7">
+                                                <StackPanel>
+                                                    <TextBlock Text="{Binding HeaderText}" FontWeight="SemiBold"
+                                                               FontSize="12" TextWrapping="Wrap" />
+                                                    <TextBlock Text="{Binding Publisher}" FontSize="11"
+                                                               Foreground="#6B7280" Margin="0,2,0,0" TextWrapping="Wrap" />
+                                                    <TextBlock Text="{Binding LocationText}" FontSize="11"
+                                                               Foreground="#9CA3AF" Margin="0,1,0,0" TextWrapping="Wrap" />
+                                                </StackPanel>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                            </DockPanel>
+                        </Border>
+
+                        <Border Grid.Column="2" Style="{StaticResource CardBorder}">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                </Grid.RowDefinitions>
+
+                                <StackPanel Grid.Row="0">
+                                    <TextBlock Style="{StaticResource CardTitle}" Text="对选中包执行操作" />
+                                    <TextBlock x:Name="PackageOperationTargetText" FontSize="13" FontWeight="SemiBold"
+                                               Foreground="#111827" TextWrapping="Wrap" Text="未选择软件包。" />
+                                    <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                        <RadioButton x:Name="PackageInstallRadio" GroupName="PackageOperation"
+                                                     Content="安装" IsChecked="True" VerticalAlignment="Center"
+                                                     Checked="OnPackageOperationChanged" />
+                                        <RadioButton x:Name="PackageUpgradeRadio" GroupName="PackageOperation"
+                                                     Content="升级（覆盖安装）" Margin="14,0,0,0" VerticalAlignment="Center"
+                                                     Checked="OnPackageOperationChanged" />
+                                        <RadioButton x:Name="PackageUninstallRadio" GroupName="PackageOperation"
+                                                     Content="卸载" Margin="14,0,0,0" VerticalAlignment="Center"
+                                                     Checked="OnPackageOperationChanged" />
+                                    </StackPanel>
+                                    <CheckBox x:Name="PackageForceReinstallCheck" Margin="0,8,0,0"
+                                              Content="强制重装（已装同版本时覆盖安装，需二次确认）" />
+                                    <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                                        <Button x:Name="RunPackageButton" Style="{StaticResource PrimaryButton}"
+                                                Content="执行操作" IsEnabled="False" Click="OnRunPackageClick" />
+                                        <Button x:Name="CancelPackageButton" Height="34" Padding="14,0" Margin="8,0,0,0"
+                                                Content="中止" IsEnabled="False" Click="OnCancelPackageClick" />
+                                    </StackPanel>
+                                    <TextBlock x:Name="PackagePreflightText" FontSize="12" Foreground="#6B7280"
+                                               TextWrapping="Wrap" Margin="0,10,0,0"
+                                               Text="请选择左侧软件包以查看执行前检查结果。" />
+                                </StackPanel>
+
+                                <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="0,10,0,0">
+                                    <ItemsControl x:Name="PackageResultList">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border BorderBrush="#F3F4F6" BorderThickness="0,0,0,1" Padding="0,9">
+                                                    <StackPanel>
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <Border CornerRadius="10" Padding="8,2" VerticalAlignment="Center"
+                                                                    Background="{Binding Outcome, Converter={StaticResource InstallerOutcomeBrush}}">
+                                                                <TextBlock FontSize="11" Foreground="White"
+                                                                           Text="{Binding OutcomeText}" />
+                                                            </Border>
+                                                            <TextBlock Text="{Binding HeaderText}" FontWeight="SemiBold"
+                                                                       FontSize="13" TextWrapping="Wrap" Margin="10,0,0,0"
+                                                                       VerticalAlignment="Center" />
+                                                        </StackPanel>
+                                                        <TextBlock Text="{Binding Description}" FontSize="12"
+                                                                   Foreground="#374151" TextWrapping="Wrap" Margin="0,4,0,0" />
+                                                        <TextBlock Text="{Binding DetailText}" FontSize="11"
+                                                                   Foreground="#6B7280" TextWrapping="Wrap" Margin="0,3,0,0" />
+                                                        <TextBlock Text="{Binding AfterText}" FontSize="12"
+                                                                   Foreground="#B45309" TextWrapping="Wrap" Margin="0,3,0,0"
+                                                                   Visibility="{Binding HasAfterText, Converter={StaticResource BoolToVisibility}}" />
+                                                        <TextBlock Text="{Binding ErrorText}" FontFamily="Consolas"
+                                                                   FontSize="11" Foreground="#B91C1C" TextWrapping="Wrap"
+                                                                   Margin="0,3,0,0"
+                                                                   Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}" />
+                                                        <TextBlock Text="{Binding OutputText}" FontFamily="Consolas"
+                                                                   FontSize="11" Foreground="#374151" TextWrapping="Wrap"
+                                                                   Margin="0,3,0,0"
+                                                                   Visibility="{Binding HasOutput, Converter={StaticResource BoolToVisibility}}" />
+                                                    </StackPanel>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </ScrollViewer>
+                            </Grid>
+                        </Border>
+                    </Grid>
+                </Grid>
+            </TabItem>
+
+            <!-- ============ M6 账号与权限辅助 ============ -->
+            <TabItem Header="账号与权限（M6）">
+                <Grid Margin="0,4,0,0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <Border Grid.Row="0" Style="{StaticResource CardBorder}">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource CardTitle}"
+                                       Text="账号与权限只读查询（不产生任何系统变更；变更类操作请在“修复动作（M4）”中选择并二次确认）" />
+                            <StackPanel Orientation="Horizontal">
+                                <Button x:Name="QueryAccountsButton" Style="{StaticResource PrimaryButton}"
+                                        Content="查询账号与权限" Click="OnQueryAccountsClick" />
+                                <Button x:Name="CancelAccountQueryButton" Height="34" Padding="14,0" Margin="8,0,0,0"
+                                        Content="中止查询" IsEnabled="False" Click="OnCancelAccountQueryClick" />
+                                <TextBlock Foreground="#9CA3AF" FontSize="11" Margin="14,0,0,0" VerticalAlignment="Center"
+                                           TextWrapping="Wrap"
+                                           Text="解锁 / 启用 / 停用 / 重命名 / 清理缓存的共享凭据等变更操作由 M4 动作库执行，均需二次确认。" />
+                            </StackPanel>
+                            <ProgressBar x:Name="AccountProgressBar" Height="6" Margin="0,12,0,6"
+                                         Minimum="0" Maximum="100" Value="0" />
+                            <TextBlock x:Name="AccountSummaryText" FontSize="12" FontWeight="SemiBold"
+                                       Foreground="#111827" TextWrapping="Wrap" Text="尚未查询。" />
+                            <TextBlock x:Name="AccountQueryText" FontSize="11" Foreground="#6B7280"
+                                       TextWrapping="Wrap" Margin="0,2,0,0" />
+                            <TextBlock x:Name="AccountAttentionText" FontSize="12" Foreground="#B45309"
+                                       TextWrapping="Wrap" Margin="0,4,0,0" Visibility="Collapsed" />
+                            <TextBlock x:Name="AccountProblemsText" FontSize="12" Foreground="#B45309"
+                                       TextWrapping="Wrap" Margin="0,4,0,0" Visibility="Collapsed" />
+                        </StackPanel>
+                    </Border>
+
+                    <Grid Grid.Row="1" Margin="0,12,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="300" />
+                            <ColumnDefinition Width="400" />
+                        </Grid.ColumnDefinitions>
+
+                        <Border Grid.Column="0" Style="{StaticResource CardBorder}" Margin="0,0,12,0">
+                            <DockPanel>
+                                <TextBlock DockPanel.Dock="Top" Style="{StaticResource CardTitle}"
+                                           Text="本地账号（只读）" />
+                                <ListBox x:Name="AccountList" BorderThickness="0"
+                                         ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border BorderBrush="#F3F4F6" BorderThickness="0,0,0,1" Padding="2,8">
+                                                <StackPanel>
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <Border CornerRadius="10" Padding="8,2" VerticalAlignment="Center"
+                                                                Background="{Binding Converter={StaticResource AccountRowBrush}}">
+                                                            <TextBlock FontSize="11" Foreground="White"
+                                                                       Text="{Binding StatusText}" />
+                                                        </Border>
+                                                        <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="13"
+                                                                   Margin="10,0,0,0" VerticalAlignment="Center" />
+                                                        <TextBlock Text="{Binding FullNameText}" FontSize="11"
+                                                                   Foreground="#6B7280" Margin="10,0,0,0"
+                                                                   VerticalAlignment="Center"
+                                                                   Visibility="{Binding HasFullName, Converter={StaticResource BoolToVisibility}}" />
+                                                    </StackPanel>
+                                                    <TextBlock Text="{Binding SourceText}" FontSize="11"
+                                                               Foreground="#6B7280" Margin="0,3,0,0" />
+                                                    <TextBlock Text="{Binding LastLogonText}" FontSize="11"
+                                                               Foreground="#9CA3AF" Margin="0,1,0,0" />
+                                                    <TextBlock Text="{Binding PasswordText}" FontSize="11"
+                                                               Foreground="#9CA3AF" Margin="0,1,0,0" />
+                                                </StackPanel>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                            </DockPanel>
+                        </Border>
+
+                        <Border Grid.Column="1" Style="{StaticResource CardBorder}" Margin="0,0,12,0">
+                            <DockPanel>
+                                <TextBlock DockPanel.Dock="Top" Style="{StaticResource CardTitle}"
+                                           Text="本地管理员组成员（只读）" />
+                                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                    <ItemsControl x:Name="AdministratorList">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding}" FontSize="12" Foreground="#374151"
+                                                           TextWrapping="Wrap" Margin="0,2" />
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </ScrollViewer>
+                            </DockPanel>
+                        </Border>
+
+                        <Border Grid.Column="2" Style="{StaticResource CardBorder}">
+                            <DockPanel>
+                                <TextBlock DockPanel.Dock="Top" Style="{StaticResource CardTitle}"
+                                           Text="UAC / 域 / 策略 / 时间与凭据残留（只读）" />
+                                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                    <StackPanel>
+                                        <ItemsControl x:Name="AccountFactList">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Grid Margin="0,3">
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="150" />
+                                                            <ColumnDefinition Width="*" />
+                                                        </Grid.ColumnDefinitions>
+                                                        <TextBlock Grid.Column="0" Style="{StaticResource FieldName}"
+                                                                   Text="{Binding Name}" Margin="0,0,10,0" />
+                                                        <TextBlock Grid.Column="1" Style="{StaticResource FieldValue}"
+                                                                   Text="{Binding Value}" />
+                                                    </Grid>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+
+                                        <TextBlock Text="共享凭据残留（凭据管理器）" Style="{StaticResource CardTitle}"
+                                                   Margin="0,12,0,4"
+                                                   Visibility="{Binding HasItems, ElementName=AccountCredentialList, Converter={StaticResource BoolToVisibility}}" />
+                                        <ItemsControl x:Name="AccountCredentialList">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <TextBlock Text="{Binding}" FontFamily="Consolas" FontSize="11"
+                                                               Foreground="#374151" TextWrapping="Wrap" Margin="0,2" />
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                        <TextBlock x:Name="AccountCredentialEmptyText" FontSize="12" Foreground="#6B7280"
+                                                   TextWrapping="Wrap" Margin="0,12,0,0"
+                                                   Text="未发现缓存的共享凭据残留。" />
+                                    </StackPanel>
                                 </ScrollViewer>
                             </DockPanel>
                         </Border>

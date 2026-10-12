@@ -19,6 +19,7 @@ DeskIT/
 ├─ .gitignore
 ├─ README.md
 ├─ actions/               修复动作声明式定义（M4，JSON；随程序一并分发）
+├─ packages/              随介质携带的软件包描述文件（M5，JSON；安装程序本体另行同步）
 ├─ docs/
 │  ├─ DESIGN_DeskIT.md    总体架构与实现约束
 │  └─ TASK_DeskIT.md      原子任务分解（步骤 2 ~ 步骤 9）
@@ -32,9 +33,9 @@ DeskIT/
    └─ DeskIT.Core.Tests/  Core 规则的 xUnit 单元测试
 ```
 
-- **DeskIT.Core**：风险级别、动作结果、诊断结论四态、会话状态机等枚举；采集分组/快照/档案模型、诊断结论/场景/会话模型、动作定义/执行结果/备份记录模型；以及“启动自检阈值与能力推导”“机器标识回退与档案归并”“快照保留上限”“按风险排序且需重启动作排最后”“动作风险分级与确认要求、参数绑定转义与结果归类”“诊断结论异常置顶与四态统计”“会话状态机合法迁移”等可测试的纯函数规则。
-- **DeskIT.Windows**：启动自检能力（权限、提权、单实例、完整性、目录读写、卷空间、系统版本）、设备信息只读采集（WMI / 注册表 / 网络接口 / 卷信息）、档案与快照存储、PowerShell 5.1 执行器、场景化问题诊断（M3），以及修复动作库加载 / 前置条件检查 / 统一执行器 / 备份区存储（M4）。
-- **DeskIT.App**：WPF 界面外壳（M1 便携启动 / M2 设备信息采集 / M3 问题诊断 / M4 修复动作库），引用 Core 与 Windows。
+- **DeskIT.Core**：风险级别、动作结果、诊断结论四态、会话状态机等枚举；采集分组/快照/档案模型、诊断结论/场景/会话模型、动作定义/执行结果/备份记录模型、软件包描述与安装器归因模型、本地账号与权限快照模型；以及“启动自检阈值与能力推导”“机器标识回退与档案归并”“快照保留上限”“按风险排序且需重启动作排最后”“动作风险分级与确认要求、参数绑定转义与结果归类”“诊断结论异常置顶与四态统计”“会话状态机合法迁移”“包完整性判定与版本比较、安装器退出码归因”“账号状态与密码策略解析、UAC 风险描述”等可测试的纯函数规则。
+- **DeskIT.Windows**：启动自检能力（权限、提权、单实例、完整性、目录读写、卷空间、系统版本）、设备信息只读采集（WMI / 注册表 / 网络接口 / 卷信息）、档案与快照存储、PowerShell 5.1 执行器、场景化问题诊断（M3）、修复动作库加载 / 前置条件检查 / 统一执行器 / 备份区存储（M4），以及软件包库加载与哈希校验 / 安装卸载编排（M5）、账号与权限只读查询（M6）。
+- **DeskIT.App**：WPF 界面外壳（M1 便携启动 / M2 设备信息采集 / M3 问题诊断 / M4 修复动作库 / M5 软件安装卸载 / M6 账号与权限），引用 Core 与 Windows。
 
 ## 构建 / 测试 / 发布
 
@@ -67,6 +68,7 @@ powershell -ExecutionPolicy Bypass -File tools\Generate-Manifest.ps1 -PublishDir
 | 3 | M2 设备识别与信息采集 | 已完成 |
 | 4 | M3 问题诊断 | 已完成 |
 | 5 | M4 修复动作库 | 已完成 |
+| 6 | M5 软件安装与卸载 + M6 账号与权限辅助 | 已完成 |
 
 **M1（步骤 2）**：启动页呈现三块内容——启动自检结果（程序完整性、数据目录可写、介质可用空间、目标系统版本、当前权限、并发实例）、当前权限与提权入口（管理员提权 / 只读回退）、本次能力摘要；并实现高级模式的介质级开关（随 `data/operators.json` 保存，开启需二次确认）。
 - 判定规则集中在 [StartupRules.cs](src/DeskIT.Core/StartupRules.cs)（纯逻辑、可单测）：空间 200 MB / 500 MB 阈值、系统版本支持范围、完整性结论、能力推导。
@@ -96,6 +98,20 @@ powershell -ExecutionPolicy Bypass -File tools\Generate-Manifest.ps1 -PublishDir
 - 前置条件（路径存在 / 服务存在）不满足即“已跳过”并给出原因；执行器统一包装退出码约定（脚本未显式退出时以最后一个外部命令的 `$LASTEXITCODE` 为准，终止性错误记为失败）。
 - 每次实际执行的审计与回滚信息写入 U 盘 `data/backup/actions/<执行标识>.json`（含回滚说明与脚本产出的原始数据文件），该目录后续由 M8 统一加密。
 - 纯规则见 [ActionRules.cs](src/DeskIT.Core/ActionRules.cs) 与 [ActionOrdering.cs](src/DeskIT.Core/ActionOrdering.cs)；动作定义模型见 [ActionModels.cs](src/DeskIT.Core/ActionModels.cs)；加载 / 检查 / 执行 / 落盘见 [ActionLibrary.cs](src/DeskIT.Windows/ActionLibrary.cs)、[ActionPreconditionChecker.cs](src/DeskIT.Windows/ActionPreconditionChecker.cs)、[ActionExecutor.cs](src/DeskIT.Windows/ActionExecutor.cs)、[ActionBackupStore.cs](src/DeskIT.Windows/ActionBackupStore.cs)；界面见 [MainWindow.xaml](src/DeskIT.App/MainWindow.xaml) 的“修复动作（M4）”页。
+
+**M5（步骤 6）**：软件安装与卸载页把 U 盘 `packages/` 目录里**随介质携带的安装包**部署到目标机，或从目标机卸载；包以 JSON 描述文件声明（安装程序名、静默参数、卸载入口、适配架构、最小可用空间、超时、可选的 SHA-256）。
+- **来源必须先验证**：描述文件声明了 `sha256` 且与实际文件一致才允许执行（`校验通过`）；哈希不匹配、文件缺失、未声明哈希三种情况**一律禁止执行**并在界面给出处置说明。
+- 首次使用某个包时现算 SHA-256 并提示实际值，便于把哈希补写进描述文件。
+- 操作前预检（架构兼容、磁盘空间、与目标机已装清单的版本匹配、管理员权限、启动自检结论）在界面以 `✔ / ▲ / ✘` 分级呈现，阻断项未清除时执行按钮不可用。
+- 包的一次操作会被转换为 M4 的**动作定义**交由**同一个执行器**执行，因此天然复用其超时、取消、输出截断、退出码归因、二次确认与备份审计；卸载与强制重装追加**第 2 步高风险确认**。
+- 退出码按安装器惯例归因：`0` 成功、`3010 / 1641` 成功但需重启、`1618 / 1641 / 1642` 等映射为“另一安装进行中 / 版本冲突”等类别，未知码如实记录。
+- 操作完成后复读目标机版本确认结果，并给出卸载残留说明（目录/注册表项）。
+- 纯规则见 [PackageRules.cs](src/DeskIT.Core/PackageRules.cs) 与 [PackageModels.cs](src/DeskIT.Core/PackageModels.cs)；包库加载与哈希校验见 [PackageLibrary.cs](src/DeskIT.Windows/PackageLibrary.cs)；预检与执行编排见 [PackageService.cs](src/DeskIT.Windows/PackageService.cs)；示例描述文件见 [packages/example-7zip.json](packages/example-7zip.json)。
+
+**M6（步骤 6）**：账号与权限辅助页**只读**呈现本地账号与权限现状——账号清单（状态 / 来源 / 最近登录 / 密码到期）、管理员组成员、密码策略、UAC 级别与风险提示、共享凭据缓存、时间源等事实，并把“账号被锁 / 从未登录”等需要关注的情况汇总置顶。
+- 查询由**单条 PowerShell 5.1 脚本**一次性输出 JSON（`ConvertTo-Json -Compress`）后由程序解析，查询超时可取消，**不产生任何系统变更**。
+- 账号的**变更类操作**（解除锁定 / 启用 / 停用 / 重命名）不新建执行通道，而是作为动作写入 `actions/account.json`，从而自动获得 M4 的逐项二次确认、回滚说明与备份审计。
+- 纯规则见 [AccountRules.cs](src/DeskIT.Core/AccountRules.cs) 与 [AccountModels.cs](src/DeskIT.Core/AccountModels.cs)；只读查询见 [AccountDirectoryQuery.cs](src/DeskIT.Windows/AccountDirectoryQuery.cs)；账号变更动作见 [actions/account.json](actions/account.json)；界面见 [MainWindow.xaml](src/DeskIT.App/MainWindow.xaml) 的“账号与权限（M6）”页。
 
 ## 关于需求文档
 

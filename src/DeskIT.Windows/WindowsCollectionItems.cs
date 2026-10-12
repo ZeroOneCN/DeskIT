@@ -772,7 +772,8 @@ internal static class WindowsCollectionItems
                     RegistryProbe.ReadString(hive, path, "InstallDate", view) is { Length: 8 } raw
                         ? $"{raw[..4]}-{raw[4..6]}-{raw[6..8]}"
                         : null,
-                    RegistryProbe.ReadString(hive, path, "InstallLocation", view)));
+                    RegistryProbe.ReadString(hive, path, "InstallLocation", view),
+                    RegistryProbe.ReadString(hive, path, "UninstallString", view)));
             }
         }
 
@@ -785,10 +786,12 @@ internal static class WindowsCollectionItems
     /// <param name="Publisher">发布者。</param>
     /// <param name="InstallDate">安装日期。</param>
     /// <param name="InstallLocation">安装位置。</param>
+    /// <param name="UninstallString">卸载命令（M5 卸载时优先使用软件自身的卸载入口）。</param>
     internal sealed record SoftwareEntry(
         string Name,
         string? Version,
         string? Publisher,
         string? InstallDate,
-        string? InstallLocation);
+        string? InstallLocation,
+        string? UninstallString);
 }

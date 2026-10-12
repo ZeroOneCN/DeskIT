@@ -24,5 +24,85 @@
     "requiresAdministrator": true,
     "timeoutSeconds": 120,
     "script": "$output = cmdkey /list | Out-String\nWrite-Output $output\n$targets = @()\nforeach ($line in ($output -split '(`r`n|`n)')) {\n  if ($line -match '^(目标|Target)\\s*:\\s*(.+)$') { $targets += $matches[2].Trim() }\n}\nforeach ($target in $targets) { cmdkey ('/delete:' + $target) | Out-Null }\nWrite-Output ('已删除 ' + $targets.Count + ' 条缓存的网络凭据。')\nexit 0"
+  },
+  {
+    "actionId": "account.unlock",
+    "name": "解除账号锁定",
+    "risk": "Medium",
+    "scene": "AccountPrivilege",
+    "summary": "清除指定本地账号的“已锁定”状态，用于密码多次错误导致的账号被锁（不修改密码，也不改变启用状态）。",
+    "requiresRestart": false,
+    "canRollback": false,
+    "rollbackNote": "解锁为状态恢复操作，无需回滚；若账号本应保持锁定，请勿执行。",
+    "requiresAdministrator": true,
+    "timeoutSeconds": 120,
+    "parameters": [
+      {
+        "name": "AccountName",
+        "description": "要解锁的本地账号名（如 zhangsan）"
+      }
+    ],
+    "script": "$name = {{AccountName}}\n$done = $false\ntry { Unlock-LocalUser -Name $name -ErrorAction Stop; $done = $true } catch { }\nif (-not $done) {\n  $user = [ADSI]('WinNT://' + $env:COMPUTERNAME + '/' + $name + ',user')\n  $user.IsAccountLocked = $false\n  $user.SetInfo()\n}\nWrite-Output ('已清除账号锁定：' + $name)"
+  },
+  {
+    "actionId": "account.enable",
+    "name": "启用本地账号",
+    "risk": "Medium",
+    "scene": "AccountPrivilege",
+    "summary": "启用指定的本地账号，用于误停用或需要临时恢复登录的账号。执行前请确认该账号应当处于可用状态。",
+    "requiresRestart": false,
+    "canRollback": true,
+    "rollbackNote": "如需撤销，请执行“停用本地账号”恢复为停用状态。",
+    "requiresAdministrator": true,
+    "timeoutSeconds": 120,
+    "parameters": [
+      {
+        "name": "AccountName",
+        "description": "要启用的本地账号名（如 zhangsan）"
+      }
+    ],
+    "script": "$name = {{AccountName}}\nnet user $name /active:yes | Out-Null\nif ($LASTEXITCODE -ne 0) { Write-Error ('启用账号失败，退出码 ' + $LASTEXITCODE); exit $LASTEXITCODE }\nWrite-Output ('已启用账号：' + $name)"
+  },
+  {
+    "actionId": "account.disable",
+    "name": "停用本地账号",
+    "risk": "High",
+    "scene": "AccountPrivilege",
+    "summary": "停用指定的本地账号，用于离职人员账号或长期闲置账号的收敛。停用后该账号将无法登录，请先确认不影响在用业务。",
+    "requiresRestart": false,
+    "canRollback": true,
+    "rollbackNote": "如需撤销，请执行“启用本地账号”恢复为启用状态。",
+    "requiresAdministrator": true,
+    "timeoutSeconds": 120,
+    "parameters": [
+      {
+        "name": "AccountName",
+        "description": "要停用的本地账号名（如 zhangsan）"
+      }
+    ],
+    "script": "$name = {{AccountName}}\nnet user $name /active:no | Out-Null\nif ($LASTEXITCODE -ne 0) { Write-Error ('停用账号失败，退出码 ' + $LASTEXITCODE); exit $LASTEXITCODE }\nWrite-Output ('已停用账号：' + $name)"
+  },
+  {
+    "actionId": "account.rename",
+    "name": "重命名本地账号",
+    "risk": "High",
+    "scene": "AccountPrivilege",
+    "summary": "修改本地账号的登录名（如统一命名规范）。注意：重命名不会迁移用户配置文件目录，可能出现登录后配置与桌面数据“消失”的观感，请谨慎确认。",
+    "requiresRestart": false,
+    "canRollback": false,
+    "rollbackNote": "用户名改动后无法自动恢复原名；如需撤销请再次执行本动作改回原名称。",
+    "requiresAdministrator": true,
+    "timeoutSeconds": 120,
+    "parameters": [
+      {
+        "name": "AccountName",
+        "description": "账号当前登录名（如 zhangsan）"
+      },
+      {
+        "name": "NewName",
+        "description": "新的登录名（如 zhangsan2）"
+      }
+    ],
+    "script": "$old = {{AccountName}}\n$new = {{NewName}}\n$done = $false\ntry { Rename-LocalUser -Name $old -NewName $new -ErrorAction Stop; $done = $true } catch { }\nif (-not $done) {\n  $account = Get-CimInstance -ClassName Win32_UserAccount -Filter (\"Name='\" + $old + \"' AND LocalAccount=True\")\n  if (-not $account) { Write-Error ('未找到本地账号：' + $old); exit 2 }\n  Invoke-CimMethod -InputObject $account -MethodName Rename -Arguments @{ Name = $new } | Out-Null\n}\nWrite-Output ('已重命名账号：' + $old + ' → ' + $new)"
   }
 ]

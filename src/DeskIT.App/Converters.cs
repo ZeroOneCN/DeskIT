@@ -169,6 +169,142 @@ public sealed class RiskLevelToBrushConverter : IValueConverter
         => throw new NotSupportedException();
 }
 
+/// <summary>把软件包完整性状态转换为徽标背景色。</summary>
+public sealed class PackageIntegrityToBrushConverter : IValueConverter
+{
+    private static readonly SolidColorBrush VerifiedBrush = new(Color.FromRgb(0x16, 0xA3, 0x4A));
+    private static readonly SolidColorBrush MismatchBrush = new(Color.FromRgb(0xDC, 0x26, 0x26));
+    private static readonly SolidColorBrush MissingBrush = new(Color.FromRgb(0xB9, 0x1C, 0x1C));
+    private static readonly SolidColorBrush NotDeclaredBrush = new(Color.FromRgb(0xD9, 0x77, 0x06));
+
+    /// <summary>按完整性状态返回背景色：校验通过=绿、哈希不匹配=红、文件缺失=深红、未声明哈希=橙。</summary>
+    /// <param name="value">PackageIntegrityStatus 值。</param>
+    /// <param name="targetType">目标类型。</param>
+    /// <param name="parameter">未使用。</param>
+    /// <param name="culture">区域信息。</param>
+    /// <returns>对应的画刷。</returns>
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        => value switch
+        {
+            PackageIntegrityStatus.Verified => VerifiedBrush,
+            PackageIntegrityStatus.HashMismatch => MismatchBrush,
+            PackageIntegrityStatus.FileMissing => MissingBrush,
+            _ => NotDeclaredBrush
+        };
+
+    /// <summary>不支持反向转换。</summary>
+    /// <param name="value">值。</param>
+    /// <param name="targetType">目标类型。</param>
+    /// <param name="parameter">参数。</param>
+    /// <param name="culture">区域信息。</param>
+    /// <returns>不返回。</returns>
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}
+
+/// <summary>把软件包与目标机已装软件的匹配状态转换为徽标背景色。</summary>
+public sealed class PackageMatchToBrushConverter : IValueConverter
+{
+    private static readonly SolidColorBrush NotInstalledBrush = new(Color.FromRgb(0x6B, 0x72, 0x80));
+    private static readonly SolidColorBrush SameVersionBrush = new(Color.FromRgb(0x25, 0x63, 0xEB));
+    private static readonly SolidColorBrush DifferentVersionBrush = new(Color.FromRgb(0xD9, 0x77, 0x06));
+    private static readonly SolidColorBrush UnknownVersionBrush = new(Color.FromRgb(0x7C, 0x3A, 0xED));
+
+    /// <summary>按匹配状态返回背景色：未安装=灰、版本一致=蓝、版本不一致=橙、版本未知=紫。</summary>
+    /// <param name="value">PackageMatchStatus 值。</param>
+    /// <param name="targetType">目标类型。</param>
+    /// <param name="parameter">未使用。</param>
+    /// <param name="culture">区域信息。</param>
+    /// <returns>对应的画刷。</returns>
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        => value switch
+        {
+            PackageMatchStatus.InstalledSameVersion => SameVersionBrush,
+            PackageMatchStatus.InstalledDifferentVersion => DifferentVersionBrush,
+            PackageMatchStatus.InstalledUnknownVersion => UnknownVersionBrush,
+            _ => NotInstalledBrush
+        };
+
+    /// <summary>不支持反向转换。</summary>
+    /// <param name="value">值。</param>
+    /// <param name="targetType">目标类型。</param>
+    /// <param name="parameter">参数。</param>
+    /// <param name="culture">区域信息。</param>
+    /// <returns>不返回。</returns>
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}
+
+/// <summary>把安装器归因类别转换为徽标背景色。</summary>
+public sealed class InstallerOutcomeToBrushConverter : IValueConverter
+{
+    private static readonly SolidColorBrush SuccessBrush = new(Color.FromRgb(0x16, 0xA3, 0x4A));
+    private static readonly SolidColorBrush PendingRestartBrush = new(Color.FromRgb(0x7C, 0x3A, 0xED));
+    private static readonly SolidColorBrush BlockedBrush = new(Color.FromRgb(0xD9, 0x77, 0x06));
+    private static readonly SolidColorBrush FatalBrush = new(Color.FromRgb(0xDC, 0x26, 0x26));
+    private static readonly SolidColorBrush UnknownBrush = new(Color.FromRgb(0x6B, 0x72, 0x80));
+
+    /// <summary>按归因类别返回背景色：成功=绿、需重启=紫、被阻止=橙、致命=红、未知=深灰。</summary>
+    /// <param name="value">InstallerOutcomeKind 值。</param>
+    /// <param name="targetType">目标类型。</param>
+    /// <param name="parameter">未使用。</param>
+    /// <param name="culture">区域信息。</param>
+    /// <returns>对应的画刷。</returns>
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        => value switch
+        {
+            InstallerOutcomeKind.Success => SuccessBrush,
+            InstallerOutcomeKind.SuccessPendingRestart => PendingRestartBrush,
+            InstallerOutcomeKind.AlreadyInProgress => BlockedBrush,
+            InstallerOutcomeKind.BlockedByPolicy => BlockedBrush,
+            InstallerOutcomeKind.BlockedBySecuritySoftware => BlockedBrush,
+            InstallerOutcomeKind.FatalError => FatalBrush,
+            InstallerOutcomeKind.VersionConflict => FatalBrush,
+            _ => UnknownBrush
+        };
+
+    /// <summary>不支持反向转换。</summary>
+    /// <param name="value">值。</param>
+    /// <param name="targetType">目标类型。</param>
+    /// <param name="parameter">参数。</param>
+    /// <param name="culture">区域信息。</param>
+    /// <returns>不返回。</returns>
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}
+
+/// <summary>把本地账号的可关注状态转换为徽标背景色。</summary>
+public sealed class AccountRowToBrushConverter : IValueConverter
+{
+    private static readonly SolidColorBrush NormalBrush = new(Color.FromRgb(0x16, 0xA3, 0x4A));
+    private static readonly SolidColorBrush DisabledBrush = new(Color.FromRgb(0x9C, 0xA3, 0xAF));
+    private static readonly SolidColorBrush LockedBrush = new(Color.FromRgb(0xDC, 0x26, 0x26));
+
+    /// <summary>按账号状态返回背景色：已锁定=红、已停用=灰、正常=绿。</summary>
+    /// <param name="value">AccountRowView 实例。</param>
+    /// <param name="targetType">目标类型。</param>
+    /// <param name="parameter">未使用。</param>
+    /// <param name="culture">区域信息。</param>
+    /// <returns>对应的画刷。</returns>
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        => value is AccountRowView row
+            ? row.IsLocked
+                ? LockedBrush
+                : row.IsDisabled
+                    ? DisabledBrush
+                    : NormalBrush
+            : DisabledBrush;
+
+    /// <summary>不支持反向转换。</summary>
+    /// <param name="value">值。</param>
+    /// <param name="targetType">目标类型。</param>
+    /// <param name="parameter">参数。</param>
+    /// <param name="culture">区域信息。</param>
+    /// <returns>不返回。</returns>
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}
+
 /// <summary>把动作执行结果归类转换为徽标背景色。</summary>
 public sealed class ActionOutcomeToBrushConverter : IValueConverter
 {

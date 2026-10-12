@@ -47,6 +47,22 @@ public partial class MainWindow : Window
     private bool _acting;
     private string _lastSessionId = string.Empty;
 
+    private readonly IPackageLibraryLoader _packageLibraryLoader = new PackageLibraryLoader();
+    private readonly IPackageService _packageService = new PackageService();
+    private readonly ObservableCollection<PackageResultView> _packageResults = new();
+    private PackageCatalog? _packageCatalog;
+    private IReadOnlyList<InstalledSoftwareEntry> _installedSoftware = Array.Empty<InstalledSoftwareEntry>();
+    private IReadOnlyList<PackageItemView> _packageViews = Array.Empty<PackageItemView>();
+    private IReadOnlyList<InstalledSoftwareView> _installedViews = Array.Empty<InstalledSoftwareView>();
+    private PackageItemView? _selectedPackage;
+    private string _installedProblem = string.Empty;
+    private CancellationTokenSource? _packageCancellation;
+    private bool _packaging;
+
+    private readonly IAccountDirectoryQuery _accountQuery = new AccountDirectoryQuery();
+    private CancellationTokenSource? _accountCancellation;
+    private bool _queryingAccounts;
+
     private PrivilegeLevel _privilege;
     private bool _advancedModeEnabled;
     private StartupVerdict? _verdict;
@@ -74,6 +90,7 @@ public partial class MainWindow : Window
         InitializeComponent();
 
         ActionResultList.ItemsSource = _actionResults;
+        PackageResultList.ItemsSource = _packageResults;
 
         _guard.ActivationRequested += OnActivationRequested;
         Loaded += OnLoaded;
@@ -97,6 +114,8 @@ public partial class MainWindow : Window
         _collectionCancellation?.Cancel();
         _diagnosisCancellation?.Cancel();
         _actionCancellation?.Cancel();
+        _packageCancellation?.Cancel();
+        _accountCancellation?.Cancel();
     }
 
     /// <summary>收到其他实例的激活请求：恢复并前置窗口，并提示已存在的实例。</summary>
@@ -247,6 +266,15 @@ public partial class MainWindow : Window
 
         // 修复动作库（M4）：加载动作定义并按当前运行条件计算可用性。
         EnsureActionLibraryLoaded();
+
+        // 软件安装卸载（M5）与账号与权限（M6）：刷新可用性；软件包在首次进入页签时按需加载。
+        if (_packageCatalog is not null)
+        {
+            RenderPackageStatus();
+        }
+
+        UpdatePackageAvailability();
+        UpdateAccountAvailability();
     }
 
     /// <summary>生成带勾选标记的能力条目文本。</summary>
@@ -277,6 +305,9 @@ public partial class MainWindow : Window
             CollectFullButton.IsEnabled = false;
             DiagnoseSceneButton.IsEnabled = false;
             DiagnoseAllButton.IsEnabled = false;
+            ReloadPackagesButton.IsEnabled = false;
+            RefreshInstalledButton.IsEnabled = false;
+            QueryAccountsButton.IsEnabled = false;
         }
     }
 
@@ -1193,5 +1224,579 @@ public partial class MainWindow : Window
         CancelActionsButton.IsEnabled = busy;
         ActionList.IsEnabled = !busy;
         ActionSearchBox.IsEnabled = !busy;
+    }
+
+    // ═══════════════════ M5 软件安装与卸载 ═══════════════════
+
+    /// <summary>页签切换：首次进入“软件安装卸载（M5）”时按需加载软件包目录（避免拖慢启动自检）。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private void OnMainTabChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!ReferenceEquals(e.OriginalSource, MainTabs))
+        {
+            return;
+        }
+
+        if (MainTabs.SelectedIndex == 4)
+        {
+            EnsurePackagesLoaded();
+        }
+    }
+
+    /// <summary>
+    /// 确保软件包目录已加载：首次读取目标机已装软件清单、加载 U 盘 <c>packages/</c> 并校验哈希，
+    /// 随后构建列表与状态文案。
+    /// </summary>
+    private void EnsurePackagesLoaded()
+    {
+        if (_packageCatalog is not null)
+        {
+            return;
+        }
+
+        _installedSoftware = ReadInstalledSoftwareSafely();
+        try
+        {
+            _packageCatalog = _packageLibraryLoader.Load(_programDirectory);
+        }
+        catch (Exception ex)
+        {
+            _packageCatalog = new PackageCatalog(
+                Array.Empty<SoftwarePackage>(),
+                new[] { $"软件包目录加载失败：{ex.Message}" });
+        }
+
+        RebuildPackageLists();
+        RenderPackageStatus();
+        UpdatePackageOperationText();
+    }
+
+    /// <summary>读取目标机已装软件清单（只读）；读取失败时如实记录问题，不阻断其余功能。</summary>
+    /// <returns>已装软件条目；读取失败时返回空清单。</returns>
+    private IReadOnlyList<InstalledSoftwareEntry> ReadInstalledSoftwareSafely()
+    {
+        try
+        {
+            _installedProblem = string.Empty;
+            return _packageService.ReadInstalledSoftware();
+        }
+        catch (Exception ex)
+        {
+            _installedProblem = $"已装软件清单读取失败：{ex.Message}（可稍后点击“刷新已装软件”重试）。";
+            return Array.Empty<InstalledSoftwareEntry>();
+        }
+    }
+
+    /// <summary>按当前已装清单重建软件包与已装软件两个列表（保留已选中的软件包）。</summary>
+    private void RebuildPackageLists()
+    {
+        var packages = _packageCatalog?.Packages ?? (IReadOnlyList<SoftwarePackage>)Array.Empty<SoftwarePackage>();
+        _packageViews = PackageViewFactory.BuildPackages(packages, _installedSoftware);
+        _installedViews = PackageViewFactory.BuildInstalled(_installedSoftware);
+
+        PackageList.ItemsSource = _packageViews;
+        ApplyInstalledFilter();
+
+        var selectedId = _selectedPackage?.PackageId;
+        _selectedPackage = selectedId is null
+            ? null
+            : _packageViews.FirstOrDefault(view => string.Equals(view.PackageId, selectedId, StringComparison.OrdinalIgnoreCase));
+        PackageList.SelectedItem = _selectedPackage;
+    }
+
+    /// <summary>按搜索关键词过滤已装软件清单（按名称匹配，忽略大小写）。</summary>
+    private void ApplyInstalledFilter()
+    {
+        var keyword = InstalledSearchBox?.Text?.Trim() ?? string.Empty;
+        InstalledList.ItemsSource = keyword.Length == 0
+            ? _installedViews
+            : _installedViews.Where(view => view.Name.Contains(keyword, StringComparison.OrdinalIgnoreCase)).ToList();
+    }
+
+    /// <summary>刷新软件包与已装清单的状态文案与问题提示。</summary>
+    private void RenderPackageStatus()
+    {
+        var packages = _packageCatalog?.Packages ?? (IReadOnlyList<SoftwarePackage>)Array.Empty<SoftwarePackage>();
+        var verified = packages.Count(package => package.CanExecute);
+        PackageStatusText.Text = _packageCatalog is null
+            ? "尚未加载软件包。进入本页签后会自动加载。"
+            : $"软件包：共 {packages.Count} 个，其中校验通过 {verified} 个；目标机已装软件 {_installedSoftware.Count} 项。";
+
+        var problems = new List<string>();
+        if (_packageCatalog is not null)
+        {
+            problems.AddRange(_packageCatalog.Problems);
+        }
+
+        if (_installedProblem.Length > 0)
+        {
+            problems.Add(_installedProblem);
+        }
+
+        PackageProblemText.Text = string.Join("\n", problems);
+        PackageProblemText.Visibility = problems.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    /// <summary>点击“重新加载软件包”：重新读取 <c>packages/</c> 并重新校验每个安装程序的 SHA-256。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private async void OnReloadPackagesClick(object sender, RoutedEventArgs e)
+    {
+        if (_packaging)
+        {
+            return;
+        }
+
+        SetPackageBusy(true);
+        PackageProgressBar.Value = 0;
+        PackageStatusText.Text = "正在重新加载软件包并校验 SHA-256…";
+
+        try
+        {
+            _installedSoftware = await Task.Run(ReadInstalledSoftwareSafely);
+            _packageCatalog = await Task.Run(() => _packageLibraryLoader.Load(_programDirectory));
+            RebuildPackageLists();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"重新加载软件包失败：{ex.Message}", "DeskIT", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            SetPackageBusy(false);
+            RenderPackageStatus();
+            UpdatePackageOperationText();
+        }
+    }
+
+    /// <summary>点击“刷新已装软件”：重新读取目标机注册表中的已装软件清单并刷新匹配结果。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private async void OnRefreshInstalledClick(object sender, RoutedEventArgs e)
+    {
+        if (_packaging)
+        {
+            return;
+        }
+
+        SetPackageBusy(true);
+        PackageStatusText.Text = "正在刷新目标机已装软件清单…";
+
+        try
+        {
+            _installedSoftware = await Task.Run(ReadInstalledSoftwareSafely);
+            RebuildPackageLists();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"刷新已装软件失败：{ex.Message}", "DeskIT", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            SetPackageBusy(false);
+            RenderPackageStatus();
+            UpdatePackageOperationText();
+        }
+    }
+
+    /// <summary>已装软件搜索框文本变化时重新过滤清单。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private void OnInstalledSearchChanged(object sender, TextChangedEventArgs e) => ApplyInstalledFilter();
+
+    /// <summary>软件包列表选中项变化时刷新操作区与执行前检查预览。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private void OnPackageSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        _selectedPackage = PackageList.SelectedItem as PackageItemView;
+        UpdatePackageOperationText();
+    }
+
+    /// <summary>操作类型（安装 / 升级 / 卸载）切换时重新计算执行前检查预览。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private void OnPackageOperationChanged(object sender, RoutedEventArgs e) => UpdatePackageOperationText();
+
+    /// <summary>读取当前选中的操作类型。</summary>
+    /// <returns>操作类型（安装 / 升级 / 卸载）。</returns>
+    private PackageOperationKind CurrentPackageKind()
+    {
+        if (PackageUninstallRadio?.IsChecked == true)
+        {
+            return PackageOperationKind.Uninstall;
+        }
+
+        return PackageUpgradeRadio?.IsChecked == true ? PackageOperationKind.Upgrade : PackageOperationKind.Install;
+    }
+
+    /// <summary>刷新操作区：显示目标包、执行前检查（阻断项与提示项）与执行按钮可用性。</summary>
+    private void UpdatePackageOperationText()
+    {
+        if (_selectedPackage is null)
+        {
+            PackageOperationTargetText.Text = "未选择软件包。";
+            PackagePreflightText.Text = "请选择左侧软件包以查看执行前检查结果。";
+            UpdatePackageAvailability();
+            return;
+        }
+
+        var descriptor = _selectedPackage.Package.Descriptor;
+        PackageOperationTargetText.Text = $"{descriptor.Name} {descriptor.Version}（{descriptor.PackageId}）";
+
+        var kind = CurrentPackageKind();
+        var preflight = _packageService.Preflight(_selectedPackage.Package, kind, _installedSoftware, _privilege);
+
+        var lines = new List<string>
+        {
+            $"操作：{PackageRules.DescribeOperationKind(kind)} · {_selectedPackage.MatchDetailText}"
+        };
+
+        lines.AddRange(preflight.Blockers.Select(item => "✘ " + item));
+        lines.AddRange(preflight.Warnings.Select(item => "▲ " + item));
+
+        if (preflight.CanProceed)
+        {
+            lines.Add(preflight.Warnings.Count == 0 ? "✔ 检查通过，可以执行。" : "▲ 检查通过，但请先确认以上提示。");
+        }
+        else
+        {
+            lines.Add("✘ 存在阻断项，已禁止执行。");
+        }
+
+        PackagePreflightText.Text = string.Join("\n", lines);
+        UpdatePackageAvailability();
+    }
+
+    /// <summary>
+    /// 判断当前运行条件是否允许执行软件安装 / 卸载，并给出原因。
+    /// 只读诊断模式、启动自检未通过或介质可用空间不足时禁止执行。
+    /// </summary>
+    /// <param name="reason">禁止原因；允许时为 null。</param>
+    /// <returns>允许返回 true。</returns>
+    private bool CanOperatePackages(out string? reason)
+    {
+        if (_verdict is null || !_verdict.CanStart)
+        {
+            reason = "启动自检未通过：软件安装与卸载已禁用。";
+            return false;
+        }
+
+        if (!_verdict.IsAdministrator)
+        {
+            reason = "只读诊断模式：软件安装与卸载需要管理员权限，当前已禁用。";
+            return false;
+        }
+
+        if (!_verdict.Capabilities.CanInstall)
+        {
+            reason = "当前运行条件下不允许安装 / 卸载软件。";
+            return false;
+        }
+
+        if (!_verdict.Capabilities.CanStartNewSession)
+        {
+            reason = "介质可用空间低于 200 MB：已停止开始新的执行会话，请先归档或更换介质。";
+            return false;
+        }
+
+        reason = null;
+        return true;
+    }
+
+    /// <summary>刷新软件包区按钮可用性（执行需选中校验通过的包，且当前条件允许）。</summary>
+    private void UpdatePackageAvailability()
+    {
+        var canOperate = CanOperatePackages(out _);
+        ReloadPackagesButton.IsEnabled = !_packaging;
+        RefreshInstalledButton.IsEnabled = !_packaging;
+        RunPackageButton.IsEnabled = !_packaging
+            && canOperate
+            && _selectedPackage is not null
+            && _selectedPackage.CanExecute;
+    }
+
+    /// <summary>切换软件包操作忙碌态（加载 / 执行期间禁用触发与选择，启用中止按钮）。</summary>
+    /// <param name="busy">是否忙碌。</param>
+    private void SetPackageBusy(bool busy)
+    {
+        _packaging = busy;
+        ReloadPackagesButton.IsEnabled = !busy;
+        RefreshInstalledButton.IsEnabled = !busy;
+        PackageList.IsEnabled = !busy;
+        InstalledList.IsEnabled = !busy;
+        InstalledSearchBox.IsEnabled = !busy;
+        PackageInstallRadio.IsEnabled = !busy;
+        PackageUpgradeRadio.IsEnabled = !busy;
+        PackageUninstallRadio.IsEnabled = !busy;
+        PackageForceReinstallCheck.IsEnabled = !busy;
+        CancelPackageButton.IsEnabled = busy;
+        UpdatePackageAvailability();
+    }
+
+    /// <summary>点击“执行操作”：确认后执行一次包操作（安装 / 升级 / 卸载）。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private async void OnRunPackageClick(object sender, RoutedEventArgs e)
+    {
+        if (_packaging || _selectedPackage is null)
+        {
+            return;
+        }
+
+        if (!CanOperatePackages(out var reason))
+        {
+            MessageBox.Show(this, reason ?? "当前不允许执行软件安装 / 卸载。", "DeskIT", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var kind = CurrentPackageKind();
+        var forceReinstall = PackageForceReinstallCheck.IsChecked == true;
+        var preflight = _packageService.Preflight(_selectedPackage.Package, kind, _installedSoftware, _privilege);
+
+        if (!preflight.CanProceed)
+        {
+            MessageBox.Show(
+                this,
+                "存在阻断项，不能执行：\n" + string.Join("\n", preflight.Blockers),
+                "DeskIT",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
+        if (!ConfirmPackageOperation(_selectedPackage, kind, forceReinstall, preflight))
+        {
+            return;
+        }
+
+        await RunPackageOperationAsync(_selectedPackage, kind, forceReinstall);
+    }
+
+    /// <summary>点击“中止”：终止当前包操作；安装器可能处于不确定状态，需人工核对。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private void OnCancelPackageClick(object sender, RoutedEventArgs e)
+    {
+        _packageCancellation?.Cancel();
+        PackageStatusText.Text = "正在中止本次包操作…";
+    }
+
+    /// <summary>
+    /// 包操作前的确认流程：先汇总确认（含提示项），卸载或强制重装再追加一次高风险确认。
+    /// </summary>
+    /// <param name="view">目标软件包视图。</param>
+    /// <param name="kind">操作类型。</param>
+    /// <param name="forceReinstall">是否强制重装。</param>
+    /// <param name="preflight">执行前检查结果。</param>
+    /// <returns>全部确认通过返回 true。</returns>
+    private bool ConfirmPackageOperation(
+        PackageItemView view,
+        PackageOperationKind kind,
+        bool forceReinstall,
+        PackagePreflight preflight)
+    {
+        var descriptor = view.Package.Descriptor;
+        var summary = new StringBuilder();
+        summary.AppendLine($"即将对目标机执行：{PackageRules.DescribeOperationKind(kind)} {descriptor.Name} {descriptor.Version}");
+        summary.AppendLine(view.MatchDetailText);
+        summary.AppendLine($"安装程序：{view.Package.Check.InstallerPath}");
+
+        if (kind == PackageOperationKind.Uninstall)
+        {
+            summary.AppendLine("将使用该软件自身的卸载入口执行卸载；程序不会强制删除安装目录与注册表残留。");
+        }
+
+        foreach (var warning in preflight.Warnings)
+        {
+            summary.AppendLine("▲ " + warning);
+        }
+
+        summary.AppendLine();
+        summary.Append("确认执行？");
+
+        var confirmed = MessageBox.Show(
+            this,
+            summary.ToString(),
+            $"确认{PackageRules.DescribeOperationKind(kind)}（第 1 步：汇总确认）",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question);
+
+        if (confirmed != MessageBoxResult.Yes)
+        {
+            return false;
+        }
+
+        if (kind != PackageOperationKind.Uninstall && !forceReinstall)
+        {
+            return true;
+        }
+
+        var risk = MessageBox.Show(
+            this,
+            kind == PackageOperationKind.Uninstall
+                ? "卸载属于高风险且不可回滚的操作，确认继续？"
+                : "强制重装将覆盖目标机现有安装（需二次确认），确认继续？",
+            "高风险操作确认（第 2 步）",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning);
+
+        return risk == MessageBoxResult.Yes;
+    }
+
+    /// <summary>
+    /// 执行一次包操作：调用包服务（内部复用 M4 统一执行器），追加结果并刷新已装清单与匹配。
+    /// </summary>
+    /// <param name="view">目标软件包视图。</param>
+    /// <param name="kind">操作类型。</param>
+    /// <param name="forceReinstall">是否强制重装。</param>
+    /// <returns>无返回值的异步任务。</returns>
+    private async Task RunPackageOperationAsync(PackageItemView view, PackageOperationKind kind, bool forceReinstall)
+    {
+        SetPackageBusy(true);
+        PackageProgressBar.Value = 0;
+        PackageStatusText.Text =
+            $"正在执行：{PackageRules.DescribeOperationKind(kind)} {view.Name} {view.Version}"
+            + "（安装类动作可能长时间无输出，请耐心等待）…";
+
+        _packageCancellation = new CancellationTokenSource();
+
+        try
+        {
+            var result = await _packageService.ExecuteAsync(
+                view.Package,
+                kind,
+                _installedSoftware,
+                _privilege,
+                forceReinstall,
+                _dataDirectory,
+                _lastSessionId,
+                _packageCancellation.Token);
+
+            _packageResults.Insert(0, PackageViewFactory.BuildResult(result));
+            PackageProgressBar.Value = 100;
+            PackageStatusText.Text =
+                $"操作完成：{PackageRules.DescribeOperationKind(kind)} {view.Name} → {result.Outcome.Description}";
+
+            _installedSoftware = await Task.Run(ReadInstalledSoftwareSafely);
+            RebuildPackageLists();
+        }
+        catch (OperationCanceledException)
+        {
+            PackageStatusText.Text = "已中止本次包操作；安装器可能处于不确定状态，请人工核对该软件的实际状态。";
+        }
+        catch (Exception ex)
+        {
+            PackageStatusText.Text = "包操作失败。";
+            MessageBox.Show(this, $"执行包操作时发生异常：{ex.Message}", "DeskIT", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            SetPackageBusy(false);
+            _packageCancellation?.Dispose();
+            _packageCancellation = null;
+            UpdatePackageOperationText();
+        }
+    }
+
+    // ═══════════════════ M6 账号与权限辅助 ═══════════════════
+
+    /// <summary>点击“查询账号与权限”：执行一次只读查询并渲染结果。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private async void OnQueryAccountsClick(object sender, RoutedEventArgs e)
+    {
+        if (_queryingAccounts)
+        {
+            return;
+        }
+
+        if (_verdict is null || !_verdict.CanStart)
+        {
+            MessageBox.Show(this, "启动自检未通过，暂不能查询账号与权限。", "DeskIT", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        _queryingAccounts = true;
+        SetAccountBusy(true);
+        AccountProgressBar.Value = 10;
+        AccountSummaryText.Text = "正在查询账号与权限（只读）…";
+        AccountQueryText.Text = string.Empty;
+        AccountAttentionText.Visibility = Visibility.Collapsed;
+        AccountProblemsText.Visibility = Visibility.Collapsed;
+
+        _accountCancellation = new CancellationTokenSource();
+
+        try
+        {
+            var snapshot = await _accountQuery.QueryAsync(_privilege, _accountCancellation.Token);
+            RenderAccountSnapshot(snapshot);
+        }
+        catch (OperationCanceledException)
+        {
+            AccountSummaryText.Text = "已中止查询。";
+            AccountProgressBar.Value = 0;
+        }
+        catch (Exception ex)
+        {
+            AccountSummaryText.Text = "查询失败。";
+            AccountProgressBar.Value = 0;
+            MessageBox.Show(this, $"账号与权限查询失败：{ex.Message}", "DeskIT", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            _queryingAccounts = false;
+            _accountCancellation?.Dispose();
+            _accountCancellation = null;
+            SetAccountBusy(false);
+        }
+    }
+
+    /// <summary>点击“中止查询”：终止本次账号与权限只读查询。</summary>
+    /// <param name="sender">事件源。</param>
+    /// <param name="e">事件参数。</param>
+    private void OnCancelAccountQueryClick(object sender, RoutedEventArgs e)
+    {
+        _accountCancellation?.Cancel();
+        AccountSummaryText.Text = "正在中止查询…";
+    }
+
+    /// <summary>把账号与权限查询结果渲染到界面（账号列表、管理员组、事实项、凭据残留与问题）。</summary>
+    /// <param name="snapshot">只读查询结果。</param>
+    private void RenderAccountSnapshot(AccountSnapshot snapshot)
+    {
+        var view = AccountViewFactory.Build(snapshot);
+
+        AccountList.ItemsSource = view.Accounts;
+        AdministratorList.ItemsSource = view.Administrators;
+        AccountFactList.ItemsSource = view.Facts;
+        AccountCredentialList.ItemsSource = view.SharedCredentials;
+        AccountCredentialEmptyText.Visibility = view.HasCredentials ? Visibility.Collapsed : Visibility.Visible;
+
+        AccountSummaryText.Text = view.SummaryText;
+        AccountQueryText.Text = view.QueryText;
+
+        AccountAttentionText.Text = view.AttentionText;
+        AccountAttentionText.Visibility = view.AttentionText.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+
+        AccountProblemsText.Text = string.Join("\n", view.Problems);
+        AccountProblemsText.Visibility = view.HasProblems ? Visibility.Visible : Visibility.Collapsed;
+
+        AccountProgressBar.Value = 100;
+    }
+
+    /// <summary>刷新账号与权限查询按钮可用性（只读查询，启动自检通过即可用）。</summary>
+    private void UpdateAccountAvailability()
+    {
+        QueryAccountsButton.IsEnabled = !_queryingAccounts && _verdict is not null && _verdict.CanStart;
+    }
+
+    /// <summary>切换账号查询忙碌态（查询期间禁用触发，启用中止按钮）。</summary>
+    /// <param name="busy">是否忙碌。</param>
+    private void SetAccountBusy(bool busy)
+    {
+        QueryAccountsButton.IsEnabled = !busy && _verdict is not null && _verdict.CanStart;
+        CancelAccountQueryButton.IsEnabled = busy;
     }
 }

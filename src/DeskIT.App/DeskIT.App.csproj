@@ -10,6 +10,11 @@
     <None Include="..\..\actions\*.json" Link="actions\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
+  <!-- 软件包描述文件随程序一并分发：发布后位于可执行文件同级的 packages\ 目录（安装程序由 IT 人员自行同步到 U 盘）。 -->
+  <ItemGroup>
+    <None Include="..\..\packages\*" Link="packages\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>

@@ -1,0 +1,14 @@
+{
+  "packageId": "example-7zip-23.01",
+  "name": "7-Zip",
+  "version": "23.01",
+  "publisher": "Igor Pavlov",
+  "architecture": "X64",
+  "supportedOs": "Windows 10 / 11（64 位）",
+  "installerFileName": "7z2301-x64.exe",
+  "installerArguments": "/S",
+  "uninstallEntryName": "7-Zip 23.01 (x64)",
+  "minFreeDiskMb": 200,
+  "timeoutSeconds": 1800,
+  "notes": "示例包描述文件（格式说明用，可直接替换或删除）。用法：把安装程序 7z2301-x64.exe 放到本目录，并补齐 sha256 后重新加载；未声明 sha256 时该包按“来源不可验证”禁止执行。sha256 可用 PowerShell 计算：Get-FileHash .\\7z2301-x64.exe -Algorithm SHA256"
+}

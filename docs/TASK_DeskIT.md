@@ -32,11 +32,13 @@
 - **实际落地**：Core 新增 `ActionModels.cs`（动作定义/参数/前置条件/确认方式/执行结果/备份记录模型）、`ActionRules.cs`（风险分级与确认要求、结果归类、参数缺失校验、占位符提取与转义绑定、前置条件判定、无来源占位符识别）与 `ActionOrdering.cs`（风险升序 + 需重启排最后），共补 20 项单测；Windows 新增 `ActionLibrary.cs`（读取 `actions/*.json` 并按定义问题清单校验）、`ActionPreconditionChecker.cs`（路径存在 / 服务存在，无法判定按满足处理）、`ActionBackupStore.cs`（`data\backup\actions\<执行标识>.json`）、`ActionExecutor.cs`（权限与前置条件 → 参数解析与绑定 → `Wrap` 退出码约定 → 超时/取消/截断/归类 → 审计与回滚信息落盘）；新增 `actions/` 下 7 个定义文件共 **29 个动作**；App 新增“修复动作（M4）”页（搜索、按风险排序清单、参数填写、风险与需重启徽标、只读禁用原因、高风险逐项二次确认、不可逆输入确认词、汇总确认、执行结果展示、中止后续动作），并把诊断建议动作标识映射为“动作名称（标识）”。
 - **实测**：`dotnet build -c Release` 0 警告 0 错误、`dotnet test` 59 项全绿（动作相关 20 项）；29 个动作定义加载 0 问题、PowerShell 语法 0 错误；排序满足“低→中→高→不可逆、需重启排最后”；执行器归类正确（成功 / 失败 / 只读跳过 / 缺参跳过 / 带参成功 / 成功需重启）；备份区按执行记录正常落盘；对齐了诊断建议与动作定义的 `startup.trim-startup-items` 标识；应用启动冒烟测试通过（XAML 解析无误、进程存活）。
 
-## 步骤 6 —— M5 软件安装与卸载 + M6 账号与权限辅助
+## 步骤 6 —— M5 软件安装与卸载 + M6 账号与权限辅助（已完成）
 - **目标**：U 盘携带的 `packages/` 包的安装/卸载（含哈希校验与静默参数）；账号与权限查询类辅助。
 - **产出**：包描述解析与校验、复用 M4 执行器执行；查询类只读辅助。
 - **验收要点**：来源不可验证的包默认禁止执行；完整性校验失败即拒绝；查询类不产生变更。
 - **依赖**：步骤 5。
+- **实际落地**：Core 新增 `PackageModels.cs`（架构/完整性/匹配状态/操作类型/安装器归因/包描述/已装条目/预检/操作上下文与结果模型）、`PackageRules.cs`（完整性判定与处置说明、架构与磁盘空间检查、版本比较、已装匹配、退出码归因、`BuildOperationAction` 把“包的一次操作”转为 M4 动作定义、`BuildScript`、`FormatBytes`）、`AccountModels.cs`（本地账号信息、快照/摘要/密码策略/UAC 描述模型）与 `AccountRules.cs`（账号状态与从未登录判定、摘要统计、`net accounts` 策略解析、UAC 风险描述），共补 35 项单测；Windows 新增 `PackageLibrary.cs`（加载 `packages/*.json`、路径越界检查、SHA-256 校验）、`PackageService.cs`（已装软件读取 + 预检 + 调用 M4 执行器 + 事后版本复读与残留说明）、`AccountDirectoryQuery.cs`（单条 PowerShell 5.1 脚本输出 JSON，只读呈现账号/管理员组/共享凭据/密码策略/UAC/时间源等事实）；`WindowsCollectionItems.cs` 的软件条目补充 `UninstallString`；新增 `packages/example-7zip.json` 示例包描述，`actions/account.json` 追加 4 个账号变更动作（解锁 / 启用 / 停用 / 重命名），变更类动作自动复用 M4 的二次确认与备份审计；App 新增“软件安装卸载（M5）”页（包清单 / 已装软件可搜索 / 操作与结果三列，预检阻断与提示可视化）与“账号与权限（M6）”页（账号清单 / 管理员组 / 环境事实 / 共享凭据四列），并新增 4 个状态色转换器。
+- **实测**：`dotnet build -c Release` 0 警告 0 错误、`dotnet test` **94 项全绿**；`actions/account.json` 全部 6 个动作脚本通过 PowerShell Parser 语法校验；`packages/example-7zip.json` 可正常解析并随构建复制到输出目录 `packages/`。
 
 ## 步骤 7 —— M7 记录与多机台账
 - **目标**：单全量台账归并、处理记录（自动带处理人工号 + 姓名）、会话结束后静默产出脱敏自包含报告。
